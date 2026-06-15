@@ -1,0 +1,45 @@
+﻿Sample,category_at_initial_urine,Progression_PSA,Date_progression,Sample,Progression_Scan,Date,Sample,Progression_Biopsy,Date,Overall_Progression,Overall_Progression_Date,Progress_Reason
+120_1,H,No,,120_1,No,,120_1,No,,Not_Progressed,,No_progress
+121_7,A,Yes,02/10/2014,121_7,Yes,03/07/2014,121_7,,,Progressed,03/07/2014,Mets_Seen
+122_3,H,Yes,23/12/2014,122_3,Yes,04/02/2014,122_3,No,,Progressed,04/02/2014,Mets_Seen
+122_4,I,Yes,01/09/2017,122_4,,,122_4,No,,Progressed,01/09/2017,PSA progression following initial treatment (2 PSA tests >/= 0.2 ng/ml)
+127_6,L,No,,127_6,No,,127_6,Yes,17/07/2015,Progressed,17/07/2015,Gleason_Change
+129_4,H,Yes,27/07/2018,129_4,No,,129_4,No,,Progressed,27/07/2018,Sustained_rise_PSA_25%_or_More_12mths
+133_4,H,Yes,15/12/2018,133_4,No,,133_4,No,,Progressed,15/12/2018,PSA progression following initial treatment (2 PSA tests >/= 0.2 ng/ml)
+134_5,I,No,,134_5,No,,134_5,No,,Not_Progressed,,No_progress
+134_7,I,No,,134_7,No,,134_7,No,,Not_Progressed,,No_progress
+135_5,A,Yes,16/05/2015,135_5,Yes,04/06/2014,135_5,,,Progressed,04/06/2014,Mets_Seen
+142_1,H,No,,142_1,Yes,23/09/2015,142_1,No,,Progressed,23/09/2015,Mets_Seen
+142_4,H,No,,142_4,No,,142_4,No,,Not_Progressed,,No_progress
+142_6,H,Yes,23/06/2017,142_6,Yes,07/07/2017,142_6,No,,Progressed,23/06/2017,Sustained_rise_PSA_25%_or_More_12mths
+145_1,A,Yes,27/07/2018,145_1,No,,145_1,No,,Progressed,27/07/2018,PSA progression following initial treatment (2 PSA tests >/= 0.2 ng/ml)
+145_3,A,Yes,21/07/2015,145_3,Yes,08/08/2014,145_3,No,,Progressed,08/08/2014,Increase_PSA_>=50%_treatment_nadir
+150_4,A,No,,150_4,No,,150_4,,,Not_Progressed,,No_progress
+150_5,A,Yes,15/02/2019,150_5,Yes,11/09/2014,150_5,,,Progressed,15/02/2019,Increase_PSA_>=50%_treatment_nadir
+151_6,L,Yes,29/01/2016,151_6,No,,151_6,Yes,16/01/2015,Progressed,16/01/2015,Gleason_Change
+152_5,A,Yes,22/02/2016,152_5,Yes,06/10/2014,152_5,,,Progressed,06/10/2014,Mets_Seen
+154_4,A,NA,NA,154_4,No,,154_4,,,Not_Progressed,,No_progress
+159_7,I,Yes,11/07/2019,159_7,?Yes (Unclear),,159_7,No,,Progressed,,No_progress
+165_6,I,No,,165_6,No,,165_6,No,,Not_Progressed,,No_progress
+167_7,L,No,,167_7,No,,167_7,No,,Not_Progressed,,No_progress
+168_8,L,No,,168_8,Yes,30/07/2023,168_8,No,,Progressed,30/07/2023,New restriction in the R PZpl s/o disease progression
+173_4,L,No,,173_4,Yes,15/07/2015,173_4,No,,Progressed,15/07/2015,TNM_Stage_increase_N
+175_4,A,Yes,19/06/2019,175_4,Yes,03/08/2015,175_4,No,,Progressed,03/08/2015,Mets_Seen
+177_6,L,No,,177_6,,,177_6,No,,Not_Progressed,,No_progress
+209_4,A,Yes,,209_4,Yes,09/06/2016,209_4,,,Progressed,09/06/2016,Mets_Seen
+219_1,I,No,,219_1,,,219_1,,,Not_Progressed,,No_progress
+219_6,I,Yes,04/12/2017,219_6,Yes,19/09/2022,219_6,Yes,,Progressed,04/12/2017,Sustained_rise_PSA_25%_or_More_12mths
+223_3,H,Yes,,223_3,Yes,16/11/2021,223_3,,,Progressed,16/11/2021,TNM_Stage_increase_N
+227_3,H,No,,227_3,No,,227_3,No,,Not_Progressed,,No_progress
+235_1,I,No,,235_1,,,235_1,No,,Not_Progressed,,No_progress
+236_10,H,No,,236_10,,,236_10,No,,Not_Progressed,,No_progress
+237_4,I,Yes,08/10/2018,237_4,No,,237_4,Yes,,Progressed,08/10/2018,Sustained_rise_PSA_25%_or_More_12mths
+241_1,L,No,,241_1,No,,241_1,No,,Not_Progressed,,No_progress
+241_2,H,Yes,09/10/2020,241_2,No,,241_2,No,,Progressed,09/10/2020,PSA progression following initial treatment (2 PSA tests >/= 0.2 ng/ml)
+241_5,L,No,,241_5,No,,241_5,No,,Not_Progressed,,No_progress
+245_2,L,No,,245_2,No,,245_2,Yes,26/10/2017,Progressed,26/10/2017,Gleason_Change
+249_4,H,No,,249_4,No,,249_4,No,,Not_Progressed,,No_progress
+249_7,I,No,,249_7,No,,249_7,No,,Not_Progressed,,No_progress
+251_3,H,Yes,03/03/2022,251_3,No,,251_3,No,,Progressed,03/03/2022,PSA progression following initial treatment (2 PSA tests >/= 0.2 ng/ml)
+251_4,L,No,,251_4,No,,251_4,Yes,16/10/2019,Progressed,,Gleason_Change
+259_4,A,Yes,02/12/2020,259_4,Yes,02/10/2017,259_4,Yes,,Progressed,02/10/2017,Mets_Seen
