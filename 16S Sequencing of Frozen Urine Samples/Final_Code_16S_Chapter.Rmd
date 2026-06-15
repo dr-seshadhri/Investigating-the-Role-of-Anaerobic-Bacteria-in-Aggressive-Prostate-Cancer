@@ -1,0 +1,3273 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+# 16S SEQUENCING OF URINE SAMPLES 
+## 1. LIBRARIES -----
+
+```{r, echo=FALSE, warning=FALSE}
+library(ape)
+library(vegan)
+library(cluster)
+library(phyloseq)
+library(Boruta)
+library(microViz)
+library(factoextra)
+library(survival)
+library(lubridate)
+library(broom)
+library(knitr)
+library(ggfortify)
+library(dplyr)
+library(ggbeeswarm)
+library(ggpubr)
+library(tidyr)
+library(graphics)
+library(reshape2)
+library(kselection)
+library(stats)
+library(pheatmap)
+library(SCRuB)
+library(survminer)
+library(randomForest)
+library(SIAMCAT)
+library(corrr)
+library(PERFect)
+library(corrplot)
+library(Hmisc)
+```
+
+## 2. SET SEED AND WORKING DIRECTORY AND LOAD RDATA FILE FROM DADA2 OUTPUTS ----
+
+```{r)
+set.seed(202) #If you are going to try all three methods in step 6, change seed for each of them for reproducibility
+setwd("~/Desktop/16S_FinalPipeline_PERFect") #Change this to the appropriate working directory depending on step 6
+load("16S_FinalPipeline.RData")
+```
+
+## 3. PRE-PROCESSING OF DATA ----
+### 3.1. Define a function to remove "_Sxx_L001" from filenames ----
+
+```{r}
+remove_suffix <- function(file) {
+  # Use regular expression to remove the "_Sxx_L001" part
+  new_filename <- sub("_S\\d+_L001$", "", file)
+  return(new_filename)
+}
+```
+
+### 3.2 Apply the renaming function to the row names -----
+
+```{r, echo=FALSE, warning=FALSE}
+rownames(seqtab.nochim.df) <- sapply(rownames(seqtab.nochim.df), remove_suffix)
+```
+
+### 3.3 Change the rownames on seqtab.npchim.df to match metadata ----
+
+```{r}
+new_row_names <- sub("^M-", "", rownames(seqtab.nochim.df))
+new_row_names <- sub("-POST", "", new_row_names)
+new_row_names <- sub("_", "-", new_row_names)
+rownames(seqtab.nochim.df) <- new_row_names
+rownames(seqtab.nochim.df) <- sub("^M-", "", rownames(seqtab.nochim.df))
+
+colnames(seqtab.nochim.df) <- c(1:ncol(seqtab.nochim.df))
+colnames(seqtab.nochim.df) <- paste("ASV", colnames(seqtab.nochim.df), sep = "_")
+rownames(taxa.print.df) <- colnames(seqtab.nochim.df)
+taxa.print.matrix <- as.matrix(taxa.print.df)
+
+write.csv(file = "Seqtab_Nochim_df.csv", seqtab.nochim.df)
+```
+
+### 3.4. Formatting in Excel ----
+Convert all the '_' in sample names to '-'. 
+Then Change so the samples are in the right order (sort the whole dataframe by A to Z in excel for column A)]
+Now read the newly formatted file again
+
+```{r}
+seqtab.nochim.df <- read.csv("Seqtab_Nochim_df.csv")
+row.names(seqtab.nochim.df) <- seqtab.nochim.df$X
+seqtab.nochim.df <- seqtab.nochim.df[,-1]
+```
+
+## 4.CONTAMINANT REMOVAL -----
+### 4.1. SCRuB Package
+
+```{r}
+data <- as.matrix(seqtab.nochim.df)
+scrub_metadata <- read.csv("Scrub_Metadata.csv", row.names = 1)
+scr_out <- SCRuB(input_data = data, metadata = scrub_metadata)
+
+scr_out_decontaminated_samples <- as.data.frame(scr_out$decontaminated_samples)
+write.csv(file = "scrub_decontaminated_samples.csv", scr_out_decontaminated_samples)
+scr_out_decontaminated_fraction <- as.data.frame(scr_out$p)
+write.csv(file = "scrub_decontaminated_fraction.csv", scr_out_decontaminated_fraction)
+scr_inner_iterations <- as.list(scr_out$inner_iterations)
+scr_gamma <- as.data.frame(scr_inner_iterations[["Control"]][["gamma"]])
+write.csv(file = "scrub_gamma.csv", scr_gamma)
+
+seqtab.nochim.scrubbed <- scr_out_decontaminated_samples
+```
+
+156-5 for some reason always appears before 156-1 - have to see what that is about
+### 4.2. Apply Salter Contaminant rules here ----
+Upload metadata files for the 89 samples only and not the blanks and NTCs
+
+```{r}
+metadata <- read.csv("Metadata_16SDataset.csv", row.names=1)
+```
+
+#### 4.2.1 Phyloseq Object with Read Counts ----
+
+```{r}
+otu_tab <- otu_table(seqtab.nochim.scrubbed, taxa_are_rows = FALSE)
+sample_dat <- sample_data(metadata)
+tax_dat <- tax_table(taxa.print.matrix)
+ps <- merge_phyloseq(otu_tab, sample_dat, tax_dat)
+rank_names(ps)
+```
+
+#### 4.2.2 Genus Level Phyloseq Object ----
+
+```{r}
+ps_genus <- tax_glom(ps, "Genus")
+p1 <- plot_bar(ps_genus, fill = "Genus")
+ggsave(filename = 'Genus_Read_CountPlot.pdf', plot=p1, width=120, height=40, limitsize = FALSE)
+p1
+
+ps_species <- tax_glom(ps, "Species")
+```
+
+#### 4.2.3. Get Abundance Table at Genus Level and Species Level using the Genus and Species Phyloseq Object -----
+
+```{r}
+genus_abundance <- as.data.frame(otu_table(ps_genus))
+genus_taxa <- as.data.frame(tax_table(ps_genus))
+genus_names <- as.list(genus_taxa$Genus)
+colnames(genus_abundance) <- genus_names
+write.csv(file = "Genus_Abundance_Table_ReadCounts.csv", genus_abundance)
+
+species_abundance <- as.data.frame(otu_table(ps_species))
+species_taxa <- as.data.frame(tax_table(ps_species))
+species_names <- as.list(species_taxa$Species)
+colnames(species_abundance) <- species_names
+write.csv(file = "Species_Abundance_Table_ReadCounts.csv", species_abundance)
+```
+
+#### 4.2.4 Generate the Salter Dataframes ----
+
+```{r}
+'%ni%' <- Negate('%in%')
+consensus <- c("Afipia", "Aquabacterium", "Asticcacaulis", "Aurantimonas", "Beijerinckia", "Bosea", "Bradyrhizobium", "Brevundimonas", "Caulobacter", "Craurococcus", "Devosia", "Hoeflea", "Mesorhizobium", "Methylobacterium", "Novosphingobium", "Ochrobactrum", "Paracoccus", "Pedomicrobium", "Phyllobacterium", "Rhizobium", "Roseomonas", "Sphingobium", "Sphingomonas", "Sphingopyxis",
+               "Acidovorax", "Azoarcus", "Azospira", "Burkholderia", "Comamonas", "Cupriavidus", "Curvibacter", "Delftia", "Duganella", "Herbaspirillum", "Janthinobacterium", "Kingella", "Leptothrix", "Limnobacter", "Massilia", "Methylophilus", "Methyloversatilis", "Oxalobacter", "Pelomonas", "Polaromonas", "Ralstonia", "Schlegelella", "Sulfuritalea", "Undibacterium", "Variovorax",
+               "Enhydrobacter", "Nevskiae", "Pseudomonas", "Pseudoxanthomonas", "Psychrobacter", "Stenotrophomonas", "Xanthomonas",
+               "Aeromicrobium", "Arthrobacter", "Beutenbergia", "Brevibacterium", "Curtobacterium", "Dietzia", "Geodermatophilus", "Janibacter", "Microbacterium", "Microlunatus", "Patulibacter", "Propionibacterium", "Rhodococcus", "Tsukamurella",
+               "Abiotrophia", "Bacillus", "Brevibacillus", "Brochothrix", "Paenibacillus",
+               "Chryseobacterium", "Dyadobacter", "Flavobacterium", "Hydrotalea", "Niastella", "Olivibacter", "Pedobacter", "Wautersiella",
+               "Deinococcus")
+
+
+contaminants <- c("Afipia", "Aquabacterium", "Asticcacaulis", "Aurantimonas", "Beijerinckia", "Bosea", "Bradyrhizobium", "Brevundimonas", "Caulobacter", "Craurococcus", "Devosia", "Hoeflea", "Mesorhizobium", "Methylobacterium", "Novosphingobium", "Ochrobactrum", "Paracoccus", "Pedomicrobium", "Phyllobacterium", "Rhizobium", "Roseomonas", "Sphingobium", "Sphingomonas", "Sphingopyxis",
+                  "Acidovorax", "Azoarcus", "Azospira", "Burkholderia", "Comamonas", "Cupriavidus", "Curvibacter", "Delftia", "Duganella", "Herbaspirillum", "Janthinobacterium", "Kingella", "Leptothrix", "Limnobacter", "Massilia", "Methylophilus", "Methyloversatilis", "Oxalobacter", "Pelomonas", "Polaromonas", "Ralstonia", "Schlegelella", "Sulfuritalea", "Undibacterium", "Variovorax",
+                  "Acinetobacter", "Enhydrobacter", "Enterobacter", "Escherichia", "Nevskiae", "Pseudomonas", "Pseudoxanthomonas", "Psychrobacter", "Stenotrophomonas", "Xanthomonas",
+                  "Aeromicrobium", "Arthrobacter", "Beutenbergia", "Brevibacterium", "Corynebacterium", "Curtobacterium", "Dietzia", "Geodermatophilus", "Janibacter", "Kocuria", "Microbacterium", "Micrococcus", "Microlunatus", "Patulibacter", "Propionibacterium", "Rhodococcus", "Tsukamurella",
+                  "Abiotrophia", "Bacillus", "Brevibacillus", "Brochothrix", "Facklamia", "Paenibacillus", "Streptococcus",
+                  "Chryseobacterium", "Dyadobacter", "Flavobacterium", "Hydrotalea", "Niastella", "Olivibacter", "Pedobacter", "Wautersiella",
+                  "Deinococcus")
+salter_nocontaminants <- subset(genus_abundance, select = names(genus_abundance) %ni% contaminants)
+salter_consensus <- subset(genus_abundance, select = names(genus_abundance) %ni% consensus)
+salter_allcontaminants <- genus_abundance
+
+write.csv(file = "No_Contaminants.csv", salter_nocontaminants)
+write.csv(file = "Consensus.csv", salter_consensus)
+write.csv(file = "All_Contaminants.csv", salter_allcontaminants)
+```
+
+# 5. KEEP ONLY HILA SAMPLES (CANCER SAMPLES) ----
+If needed, you can further shorten the list by removing Advanced (A) samples
+
+```{r}
+hila_samples_metadata <- metadata %>% filter(category_at_initial_urine_collection == "H" | 
+                                               category_at_initial_urine_collection == "I" |
+                                               category_at_initial_urine_collection == "L" |
+                                               category_at_initial_urine_collection == "A")
+
+hila_samples <- c(rownames(hila_samples_metadata))
+
+salter_nocontaminants_hila <- salter_nocontaminants %>% filter(rownames(salter_nocontaminants) %in% hila_samples)
+salter_consensus_hila <- salter_consensus %>% filter(rownames(salter_consensus) %in% hila_samples)
+salter_allcontaminants_hila <- salter_allcontaminants %>% filter(rownames(salter_allcontaminants) %in% hila_samples)
+```
+
+# 6. FILTRATION CRITERIA FOR PRESENCE ABSENCE (SELECT ANY ONE FROM 6.1 TO 6.3 NOT ALL) ----
+If you are looking to do work with abundance data then go down to section 19 for SIAMCAT
+
+## 6.1 1% CUTOFF ----
+Chosen because the cutoffs have been arbitarily chosen usually and I found a paper that assigns 1% to rare taxa.
+Have tried 5% before but that takes off too many taxa that are important
+Change working directory to appropriate method between 6.1 and 6.3 to avoid confusion of results
+
+### 6.1.1 Convert all of these dataframes into relative abundance ----
+
+```{r}
+salter_nocontaminants.rel <- decostand(salter_nocontaminants_hila, method='total', MARGIN = 1)
+salter_consensus.rel <- decostand(salter_consensus_hila, method='total', MARGIN = 1)
+salter_allcontaminants.rel<- decostand(salter_allcontaminants_hila, method='total', MARGIN = 1)
+```
+
+### 6.1.2 Remove those values that are less than 1% and convert to presence/absence ----
+
+```{r}
+salter_nocontaminants.rel.PA<- salter_nocontaminants.rel %>% mutate_if(is.numeric, ~1 * (. > 0.01))
+salter_consensus.rel.PA<- salter_consensus.rel %>% mutate_if(is.numeric, ~1 * (. > 0.01))
+salter_allcontaminants.rel.PA<- salter_allcontaminants.rel %>% mutate_if(is.numeric, ~1 * (. > 0.01))
+```
+
+### 6.1.3 Only select genera with more than 2 hits (presence) ----
+
+```{r}
+salter_nocontaminants.rel.PA2 <- salter_nocontaminants.rel.PA %>% select_if(function(col) is.character(col) || (is.numeric(col) && sum(col) >=2))
+salter_consensus.rel.PA2 <- salter_consensus.rel.PA %>% select_if(function(col) is.character(col) || (is.numeric(col) && sum(col) >=2))
+salter_allcontaminants.rel.PA2 <- salter_allcontaminants.rel.PA %>% select_if(function(col) is.character(col) || (is.numeric(col) && sum(col) >=2))
+```
+
+### 6.1.4 Write CSV Files for presence-absence matrices ----
+
+```{r}
+write.csv(file = "Salter_NoContaminants_PA.csv", salter_nocontaminants.rel.PA2)
+write.csv(file = "Salter_Consensus_PA.csv", salter_consensus.rel.PA2)
+write.csv(file = "Salter_AllContaminants_PA.csv", salter_allcontaminants.rel.PA2)
+```
+
+### 6.1.5 Preprocessing of the Data ----
+
+```{r}
+salter_nocontaminants_clean <- salter_nocontaminants.rel.PA2[rowSums(salter_nocontaminants.rel.PA2) > 0, ]
+salter_nocontaminants_clean <- na.omit(salter_nocontaminants_clean)
+
+salter_consensus_clean <- salter_consensus.rel.PA2[rowSums(salter_consensus.rel.PA2) > 0, ]
+salter_consensus_clean <- na.omit(salter_consensus_clean)
+
+salter_allcontaminants_clean <- salter_allcontaminants.rel.PA2[rowSums(salter_allcontaminants.rel.PA2) > 0, ]
+salter_allcontaminants_clean <- na.omit(salter_allcontaminants_clean)
+```
+
+## 6.2. 20 READS CUTOFF ----
+### 6.2.1. Filter any reads <20 to 0 and > 20 to 1 ----
+
+```{r}
+salter_nocontaminants_20_PA <- salter_nocontaminants_hila %>% mutate_if(is.numeric, ~1 * (. > 20))
+salter_consensus_20_PA<- salter_consensus_hila %>% mutate_if(is.numeric, ~1 * (. > 20))
+salter_allcontaminants_20_PA<- salter_allcontaminants_hila %>% mutate_if(is.numeric, ~1 * (. > 20))
+```
+
+### 6.2.2 Only select genera with more than 2 hits (presence) ----
+
+```{r}
+salter_nocontaminants_20_PA2 <- salter_nocontaminants_20_PA %>% select_if(function(col) is.character(col) || (is.numeric(col) && sum(col) >=2))
+salter_consensus_20_PA2<- salter_consensus_20_PA %>% select_if(function(col) is.character(col) || (is.numeric(col) && sum(col) >=2))
+salter_allcontaminants_20_PA2 <- salter_allcontaminants_20_PA %>% select_if(function(col) is.character(col) || (is.numeric(col) && sum(col) >=2))
+```
+
+### 6.2.3 Write CSV Files for presence-absence matrices ----
+
+```{r}
+write.csv(file = "Salter_NoContaminants_20_PA.csv", salter_nocontaminants_20_PA2)
+write.csv(file = "Salter_Consensus_20_PA.csv", salter_consensus_20_PA2)
+write.csv(file = "Salter_AllContaminants_20_PA.csv", salter_allcontaminants_20_PA2)
+```
+
+### 6.2.4 Preprocessing of the Data ----
+
+```{r}
+salter_nocontaminants_clean <- salter_nocontaminants_20_PA2[rowSums(salter_nocontaminants_20_PA2) > 0, ]
+salter_nocontaminants_clean <- na.omit(salter_nocontaminants_clean)
+
+salter_consensus_clean <- salter_consensus_20_PA2[rowSums(salter_consensus_20_PA2) > 0, ]
+salter_consensus_clean <- na.omit(salter_consensus_clean)
+
+salter_allcontaminants_clean <- salter_allcontaminants_20_PA2[rowSums(salter_allcontaminants_20_PA2) > 0, ]
+salter_allcontaminants_clean <- na.omit(salter_allcontaminants_clean)
+```
+
+## 6.3 PERFect ----
+### 6.3.1 Use PERFect to get rid of genera that do not affect variance too much ----
+
+```{r}
+perfect_perm_nocontaminants <- PERFect_perm(X = salter_nocontaminants_hila, normalize = "pres", algorithm = "full")
+perfect_perm_nocontaminants$pvals
+perfect_perm_nocontaminants_pvals <- as.data.frame(perfect_perm_nocontaminants$pvals)
+perfect_nocontaminants_significant <- perfect_perm_nocontaminants_pvals %>% filter(`perfect_perm_nocontaminants$pvals` < 0.05)
+perfect_nocontaminants.df <- as.data.frame(perfect_perm_nocontaminants$filtX)
+
+perfect_perm_consensus <- PERFect_perm(X = salter_consensus_hila, normalize = "pres", algorithm = "full")
+perfect_perm_consensus$pvals
+perfect_perm_consensus_pvals <- as.data.frame(perfect_perm_consensus$pvals)
+perfect_consensus_significant <- perfect_perm_consensus_pvals %>% filter(`perfect_perm_consensus$pvals` < 0.05)
+perfect_consensus.df <- as.data.frame(perfect_perm_consensus$filtX)
+
+perfect_perm_allcontaminants <- PERFect_perm(X = salter_allcontaminants_hila, normalize = "pres", algorithm = "full")
+perfect_perm_allcontaminants$pvals
+perfect_perm_allcontaminants_pvals <- as.data.frame(perfect_perm_allcontaminants$pvals)
+perfect_allcontaminants_significant <- perfect_perm_allcontaminants_pvals %>% filter(`perfect_perm_allcontaminants$pvals` < 0.05)
+perfect_allcontaminants.df <- as.data.frame(perfect_perm_allcontaminants$filtX)
+```
+
+### 6.3.2 Convert anything with reads to 1 because PERFect has already done the filtering out of a lot of taxa ----
+
+```{r}
+salter_nocontaminants_PA <- perfect_nocontaminants.df %>% mutate_if(is.numeric, ~1 * (. > 0))
+salter_consensus_PA<- perfect_consensus.df %>% mutate_if(is.numeric, ~1 * (. > 0))
+salter_allcontaminants_PA<- perfect_allcontaminants.df %>% mutate_if(is.numeric, ~1 * (. > 0))
+```
+
+### 6.3.3 Only select genera with more than 2 hits (presence) ----
+
+```{r}
+salter_nocontaminants_PA2 <- salter_nocontaminants_PA %>% select_if(function(col) is.character(col) || (is.numeric(col) && sum(col) >=2))
+salter_consensus_PA2<- salter_consensus_PA %>% select_if(function(col) is.character(col) || (is.numeric(col) && sum(col) >=2))
+salter_allcontaminants_PA2 <- salter_allcontaminants_PA %>% select_if(function(col) is.character(col) || (is.numeric(col) && sum(col) >=2))
+```
+
+### 6.3.4 Write CSV Files for presence-absence matrices ----
+
+```{r}
+write.csv(file = "Salter_NoContaminants_PERFect.csv", salter_nocontaminants_PA2)
+write.csv(file = "Salter_Consensus_PERFect.csv", salter_consensus_PA2)
+write.csv(file = "Salter_AllContaminants_PERFect.csv", salter_allcontaminants_PA2)
+```
+
+### 6.3.5 Preprocessing of the Data ----
+
+```{r}
+salter_nocontaminants_clean <- salter_nocontaminants_PA2[rowSums(salter_nocontaminants_PA2) > 0, ]
+salter_nocontaminants_clean <- na.omit(salter_nocontaminants_clean)
+
+salter_consensus_clean <- salter_consensus_PA2[rowSums(salter_consensus_PA2) > 0, ]
+salter_consensus_clean <- na.omit(salter_consensus_clean)
+
+salter_allcontaminants_clean <- salter_allcontaminants_PA2[rowSums(salter_allcontaminants_20_PA2) > 0, ]
+salter_allcontaminants_clean <- na.omit(salter_allcontaminants_clean)
+```
+
+CHECKPOINT ---- 
+AT THE END OF THIS STEP, NO MATTER WHICH METHOD YOU CHOOSE THE _clean dataframes should be the three you choose to work with
+#7. NMDS Plot for Genus Presence Absence Matrix ----
+
+```{r}
+class(salter_nocontaminants_clean)
+salter_nocontaminants_matrix <- as.matrix(salter_nocontaminants_clean)
+nmds <- metaMDS(salter_nocontaminants_matrix, distance = "jaccard")
+plot(nmds)
+data.scores <- as.data.frame(scores(nmds)$sites)
+plot(data.scores, pch = 16, col = "blue", main = "NMDS Plot of Jaccard Distances- FWD Reads Only (No Salter Contaminants Present)", sub = "Stress = 0.192045")
+text(data.scores, labels = rownames(data.scores), pos = 1, cex = 0.5)
+head(data.scores)
+
+class(salter_consensus_clean)
+salter_consensus_matrix <- as.matrix(salter_consensus_clean)
+nmds <- metaMDS(salter_consensus_matrix, distance = "jaccard")
+plot(nmds)
+data.scores <- as.data.frame(scores(nmds)$sites)
+plot(data.scores, pch = 16, col = "blue", main = "NMDS Plot of Jaccard Distances- FWD Reads Only (Consensus Contaminants Present)", sub = c("Stress=", paste(nmds$stress)))
+text(data.scores, labels = rownames(data.scores), pos = 1, cex = 0.5)
+head(data.scores)
+
+class(salter_allcontaminants_clean)
+salter_allcontaminants_matrix <- as.matrix(salter_allcontaminants_clean)
+nmds <- metaMDS(salter_allcontaminants_matrix, distance = "jaccard")
+plot(nmds)
+data.scores <- as.data.frame(scores(nmds)$sites)
+plot(data.scores, pch = 16, col = "blue", main = "NMDS Plot of Jaccard Distances- FWD Reads Only (All Contaminants Present)", sub = "Stress = 0.1872558")
+text(data.scores, labels = rownames(data.scores), pos = 1, cex = 0.5)
+head(data.scores)
+```
+
+# 8. Jaccard distances ----
+
+```{r}
+jaccard_dist_nocontaminants <- vegdist(salter_nocontaminants_clean, method = "jaccard")
+jaccard_dist_matrix <- as.matrix(jaccard_dist_nocontaminants)
+pheatmap(jaccard_dist_matrix, 
+         cluster_rows = TRUE,  # Optional: Hierarchical clustering of rows
+         cluster_cols = TRUE,  # Optional: Hierarchical clustering of columns
+         display_numbers = FALSE,  # Display values in the heatmap
+         fontsize_row = 4, fontsize_col = 4, angle_col = 45,
+         main = "Jaccard Dissimilarity Plot for No Contaminant Dataframe",
+         color = colorRampPalette(c("white", "blue"))(50)) 
+
+jaccard_dist_consensus <- vegdist(salter_consensus_clean, method = "jaccard")
+jaccard_dist_matrix <- as.matrix(jaccard_dist_consensus)
+pheatmap(jaccard_dist_matrix, 
+         cluster_rows = TRUE,  # Optional: Hierarchical clustering of rows
+         cluster_cols = TRUE,  # Optional: Hierarchical clustering of columns
+         display_numbers = FALSE,  # Display values in the heatmap
+         fontsize_row = 3, fontsize_col = 3, angle_col = 45,
+         main = "Jaccard Dissimilarity Plot for Consensus Dataframe",
+         color = colorRampPalette(c("white", "red"))(50)) 
+
+jaccard_dist_allcontaminants <- vegdist(salter_allcontaminants_clean, method = "jaccard")
+jaccard_dist_matrix <- as.matrix(jaccard_dist_allcontaminants)
+pheatmap(jaccard_dist_matrix, 
+         cluster_rows = TRUE,  # Optional: Hierarchical clustering of rows
+         cluster_cols = TRUE,  # Optional: Hierarchical clustering of columns
+         display_numbers = FALSE,  # Display values in the heatmap
+         fontsize_row = 3, fontsize_col = 3, angle_col = 45,
+         main = "Jaccard Dissimilarity Plot for All Contaminants Dataframe",
+         color = colorRampPalette(c("blue", "red"))(50))
+```
+
+# 9. K-Means Clustering ----
+
+```{r}
+fviz_nbclust(salter_nocontaminants_clean, kmeans, method='silhouette') 
+fviz_nbclust(salter_nocontaminants_clean, kmeans, method='gap_stat') 
+fviz_nbclust(salter_nocontaminants_clean, kmeans, method='wss') 
+
+fviz_nbclust(salter_consensus_clean, kmeans, method='silhouette') 
+fviz_nbclust(salter_consensus_clean, kmeans, method='gap_stat') 
+fviz_nbclust(salter_consensus_clean, kmeans, method='wss') 
+
+fviz_nbclust(salter_allcontaminants_clean, kmeans, method='silhouette') 
+fviz_nbclust(salter_allcontaminants_clean, kmeans, method='gap_stat') 
+fviz_nbclust(salter_allcontaminants_clean, kmeans, method='wss') 
+```
+
+For all three databases, 2 seems to be the best number of clusters based on 2 out of the 3 methods
+
+```{r}
+kselection(salter_nocontaminants_clean, fun_cluster = stats::kmeans, max_centers = 15, k_threshold = 0.85)
+kselection(salter_consensus_clean, fun_cluster = stats::kmeans, max_centers = 15, k_threshold = 0.85)
+kselection(salter_allcontaminants_clean, fun_cluster = stats::kmeans, max_centers = 15, k_threshold = 0.85)
+```
+
+All three find two clusters
+
+```{r}
+kmeans_nocontaminants <- kmeans(salter_nocontaminants_clean, 2, nstart = 20)
+kmeans_nocontaminants
+
+kmeans_consensus <- kmeans(salter_consensus_clean, 2, nstart = 20)
+kmeans_consensus
+
+kmeans_allcontaminants <- kmeans(salter_allcontaminants_clean, 2, nstart = 20)
+kmeans_allcontaminants
+```
+
+# 10. Add cluster data to the original dataframe ----
+
+```{r}
+salter_nocontaminants_clean$cluster <- as.factor(kmeans_nocontaminants$cluster)
+salter_consensus_clean$cluster <- as.factor(kmeans_consensus$cluster)
+salter_allcontaminants_clean$cluster <- as.factor(kmeans_allcontaminants$cluster)
+```
+
+# 11. NMDS Plots with Clusters ----
+
+```{r}
+jaccard_nocontaminants_dist <- vegdist(salter_nocontaminants_clean[, -ncol(salter_nocontaminants_clean)], method = "jaccard")
+nmds_nocontaminants_result <- metaMDS(jaccard_nocontaminants_dist, k = 2, trymax = 10000)
+nmds_nocontaminants_df <- as.data.frame(nmds_nocontaminants_result$points)
+nmds_nocontaminants_df$cluster <- salter_nocontaminants_clean$cluster  # Add cluster information to NMDS dataframe
+nmds_stress_nocontaminants <- nmds_nocontaminants_result$stress
+ggplot(nmds_nocontaminants_df, aes(x = MDS1, y = MDS2, color = cluster, label = rownames(salter_nocontaminants_clean))) +
+  geom_point(size = 3) +
+  labs(title = "NMDS Plot with K-means Clusters - No contaminant", 
+       subtitle = paste("NMDS Stress =", round(nmds_stress_nocontaminants, 3)), x = "NMDS1", y = "NMDS2") +
+  theme_minimal() +
+  scale_color_manual(values = c("blue", "red")) +
+  geom_text(size = 2, position = position_dodge(width =0.9), hjust=1.5)
+
+jaccard_consensus_dist <- vegdist(salter_consensus_clean[, -ncol(salter_consensus_clean)], method = "jaccard")
+nmds_consensus_result <- metaMDS(jaccard_consensus_dist, k = 2, trymax = 10000)
+nmds_consensus_df <- as.data.frame(nmds_consensus_result$points)
+nmds_consensus_df$cluster <- salter_consensus_clean$cluster  # Add cluster information to NMDS dataframe
+nmds_stress_consensus <- nmds_consensus_result$stress
+ggplot(nmds_consensus_df, aes(x = MDS1, y = MDS2, color = cluster, label = rownames(salter_consensus_clean))) +
+  geom_point(size = 3) +
+  labs(title = "NMDS Plot with K-means Clusters - Consensus", 
+       subtitle = paste("NMDS Stress =", round(nmds_stress_consensus, 3)), x = "NMDS1", y = "NMDS2") +
+  theme_minimal() +
+  scale_color_manual(values = c("blue", "red")) +
+  geom_text(size = 2, position = position_dodge(width =0.9), hjust=1.5)
+
+jaccard_allcontaminants_dist <- vegdist(salter_allcontaminants_clean[, -ncol(salter_allcontaminants_clean)], method = "jaccard")
+nmds_allcontaminants_result <- metaMDS(jaccard_allcontaminants_dist, k = 2, trymax = 10000)
+nmds_allcontaminants_df <- as.data.frame(nmds_allcontaminants_result$points)
+nmds_allcontaminants_df$cluster <- salter_allcontaminants_clean$cluster  # Add cluster information to NMDS dataframe
+nmds_stress_allcontaminants <- nmds_allcontaminants_result$stress
+ggplot(nmds_allcontaminants_df, aes(x = MDS1, y = MDS2, color = cluster, label = rownames(salter_allcontaminants_clean))) +
+  geom_point(size = 3) +
+  labs(title = "NMDS Plot with K-means Clusters - All contaminants", 
+       subtitle = paste("NMDS Stress =", round(nmds_stress_allcontaminants, 3)), x = "NMDS1", y = "NMDS2") +
+  theme_minimal() +
+  scale_color_manual(values = c("blue", "red")) +
+  geom_text(size = 2, position = position_dodge(width =0.9), hjust=1.5)
+```
+
+At this point, what you need is to add cluster data, ABBS data and Progression data to the metadata
+# 12. Add cluster data, ABBS data and Progression data to the metadata ----
+
+```{r}
+salter_nocontaminants_clean_metadata <- cbind(salter_nocontaminants_clean, Overall_Progression = hila_samples_metadata$Overall_Progression)
+salter_consensus_clean_metadata <- cbind(salter_consensus_clean, Overall_Progression = hila_samples_metadata$Overall_Progression)
+salter_allcontaminants_clean_metadata <- cbind(salter_allcontaminants_clean, Overall_Progression = hila_samples_metadata$Overall_Progression)
+```
+
+CHECKPOINT ----
+You may have to double check the genera in the following lines of code as some of the may have been eliminated depending on the method chosen in step 6
+For choosing 6.1 - 2% Cutoff - Remove the following genera from each dataframe
+6.1.a - No contaminants doesnt have Porphyromonas, Peptoniphilus E and C (Only Peptoniphilus E for 1)
+6.1.b - Consensus doesnt have the same as above
+6.1.c - All contaminants doesnt have the same as above
+For choosing 6.2 - 20 Read Cutoff - all the organisms from above are present so do not take out the three mentioned
+6.3 - For PERFect add the organisms missing in 6.1
+
+```{r}
+salter_nocontaminants_clean_metadata <- salter_nocontaminants_clean_metadata %>% mutate(abbs = Ezakiella + Fenollaria + Anaerococcus + Porphyromonas_A + Porphyromonas + Peptoniphilus_C + Peptoniphilus_A +Fusobacterium)
+salter_consensus_clean_metadata <- salter_consensus_clean_metadata %>% mutate(abbs = Ezakiella + Fenollaria + Anaerococcus + Porphyromonas + Peptoniphilus_C + Porphyromonas_A + Peptoniphilus_A + Fusobacterium)
+salter_allcontaminants_clean_metadata <- salter_allcontaminants_clean_metadata %>% mutate(abbs = Ezakiella + Fenollaria + Anaerococcus + Porphyromonas_A + Porphyromonas + Peptoniphilus_C + Peptoniphilus_A +Fusobacterium)
+```
+
+# 13. Survival Analysis based on ABBS load ----
+## 13.1 Prepare the Metadata for survival analysis based on progression ----
+
+```{r}
+metadata_nodeath <- read.csv("Metadata_16SDataset_NoDeath.csv", row.names=1)
+
+metadata_nodeath$date_of_enrollment <- as.Date(metadata_nodeath$date_of_enrollment, format = "%d/%m/%Y")
+metadata_nodeath$date_of_death <- as.Date(metadata_nodeath$date_of_death, format = "%d/%m/%Y")
+metadata_nodeath$Overall_Progression_Date <- as.Date(metadata_nodeath$Overall_Progression_Date, format = "%d/%m/%Y")
+metadata_nodeath$last_follow_up_date <- as.Date(metadata_nodeath$last_follow_up_date, format = "%d/%m/%Y")
+metadata_nodeath$days_to_last_follow_up <- metadata_nodeath$last_follow_up_date - metadata_nodeath$date_of_enrollment
+metadata_nodeath$days_to_progression <- metadata_nodeath$Overall_Progression_Date - metadata_nodeath$date_of_enrollment
+
+table(metadata_nodeath$vital_status)
+table(metadata_nodeath$Overall_Progression)
+
+metadata_nodeath$progressed <- ifelse(metadata_nodeath$Overall_Progression == "Progressed", TRUE, FALSE)
+table(metadata_nodeath$progressed)
+metadata_nodeath$overall_progression_free <- ifelse(metadata_nodeath$Overall_Progression == "Not_Progressed",
+                                                    metadata_nodeath$days_to_last_follow_up,
+                                                    metadata_nodeath$days_to_progression)
+```
+
+HILA samples Metadata 
+
+```{r}
+hila_samples_metadata_nodeath <- metadata_nodeath %>% filter(rownames(metadata_nodeath) %in% hila_samples)
+```
+
+## 13.2 Add ABBS data to the metadata ----
+
+```{r}
+hila_samples_metadata_nodeath$abbs <- c(salter_nocontaminants_clean_metadata$abbs)
+hila_samples_metadata_nodeath_nocontaminants <- hila_samples_metadata_nodeath[, 1:46]
+hila_samples_metadata_nodeath_consensus <- hila_samples_metadata_nodeath[, 1:46]
+hila_samples_metadata_nodeath_allcontaminants <- hila_samples_metadata_nodeath[, 1:46]
+
+hila_samples_metadata_nodeath_nocontaminants$abbs <- c(salter_nocontaminants_clean_metadata$abbs)
+hila_samples_metadata_nodeath_consensus$abbs <- c(salter_nocontaminants_clean_metadata$abbs)
+hila_samples_metadata_nodeath_allcontaminants$abbs <- c(salter_nocontaminants_clean_metadata$abbs)
+
+abbs_median_nocontaminants <- median(hila_samples_metadata_nodeath_nocontaminants$abbs)
+abbs_median_consensus <- median(hila_samples_metadata_nodeath_consensus$abbs)
+abbs_median_allcontaminants <- median(hila_samples_metadata_nodeath_allcontaminants$abbs)
+```
+
+Check the median values for each of them and modify the following lines accordingly
+
+```{r}
+hila_samples_metadata_nodeath_nocontaminants$abbs_load <- 
+  ifelse(hila_samples_metadata_nodeath_nocontaminants$abbs >= 1, "High", "Low")
+hila_samples_metadata_nodeath_consensus$abbs_load <- 
+  ifelse(hila_samples_metadata_nodeath_consensus$abbs >= 1, "High", "Low")
+hila_samples_metadata_nodeath_allcontaminants$abbs_load <- 
+  ifelse(hila_samples_metadata_nodeath_allcontaminants$abbs >= 1, "High", "Low")
+```
+
+## 13.3 Fit the Survival Curve to Progression ----
+
+```{r}
+survfit_nocontaminants_nodeath <- survfit(Surv(overall_progression_free, progressed) ~ abbs_load, data = hila_samples_metadata_nodeath_nocontaminants)
+survfit_nocontaminants_nodeath
+ggsurvplot(survfit_nocontaminants_nodeath,
+           data = hila_samples_metadata_nodeath_nocontaminants,
+           pval = TRUE,
+           risk.table = TRUE)
+
+survfit_consensus_nodeath <- survfit(Surv(overall_progression_free, progressed) ~ abbs_load, data = hila_samples_metadata_nodeath_consensus)
+survfit_consensus_nodeath
+ggsurvplot(survfit_consensus_nodeath,
+           data = hila_samples_metadata_nodeath_consensus,
+           pval = TRUE,
+           risk.table = TRUE)
+
+survfit_allcontaminants_nodeath <- survfit(Surv(overall_progression_free, progressed) ~ abbs_load, data = hila_samples_metadata_nodeath_allcontaminants)
+survfit_allcontaminants_nodeath
+ggsurvplot(survfit_allcontaminants_nodeath,
+           data = hila_samples_metadata_nodeath_allcontaminants,
+           pval = TRUE,
+           risk.table = TRUE)
+```
+
+# 14. Survfit object into Boruta ----
+## 14.1 Create the data required for this ----
+By merging the metadata and the genus presence-absence table
+
+```{r}
+combined_data_nocontaminants <- merge(hila_samples_metadata_nodeath_nocontaminants, 
+                                      salter_nocontaminants_clean, by = "row.names")
+rownames(combined_data_nocontaminants) <- combined_data_nocontaminants$Row.names
+combined_data_nocontaminants$Row.names <- NULL
+
+combined_data_consensus <- merge(hila_samples_metadata_nodeath_consensus, 
+                                 salter_consensus_clean, by = "row.names")
+rownames(combined_data_consensus) <- combined_data_consensus$Row.names
+combined_data_consensus$Row.names <- NULL
+
+combined_data_allcontaminants <- merge(hila_samples_metadata_nodeath_allcontaminants, 
+                                       salter_allcontaminants_clean, by = "row.names")
+rownames(combined_data_allcontaminants) <- combined_data_allcontaminants$Row.names
+combined_data_allcontaminants$Row.names <- NULL
+```
+
+## 14.2 Encode 'progressed' as factors - not sure about the latter ----
+
+```{r}
+combined_data_nocontaminants$progressed <- as.factor(combined_data_nocontaminants$progressed)
+combined_data_consensus$progressed <- as.factor(combined_data_consensus$progressed)
+combined_data_allcontaminants$progressed <- as.factor(combined_data_allcontaminants$progressed)
+```
+
+## 14.3 Survival Object ----
+
+```{r}
+survival_obj_abbs_nocontaminants <- Surv(combined_data_nocontaminants$overall_progression_free,
+                                         combined_data_nocontaminants$progressed)
+survival_obj_abbs_consensus <- Surv(combined_data_consensus$overall_progression_free,
+                                         combined_data_consensus$progressed)
+survival_obj_abbs_allcontaminants <- Surv(combined_data_allcontaminants$overall_progression_free,
+                                         combined_data_allcontaminants$progressed)
+```
+
+## 14.4 Boruta ----
+
+```{r}
+boruta_abbs_nocontaminant_survfit <- Boruta(nocontaminants_subset, survival_obj_abbs_nocontaminants, 
+                                       pValue = 0.05, maxRuns = 10000, doTrace = 2)
+
+boruta_abbs_consensus_survfit <- Boruta(consensus_subset, survival_obj_abbs_consensus, 
+                                   pValue = 0.05, maxRuns = 10000, doTrace = 2)
+
+boruta_abbs_allcontaminants_survfit <- Boruta(allcontaminants_subset, survival_obj_abbs_allcontaminants, 
+                                         pValue = 0.05, maxRuns = 10000, doTrace = 2)
+
+boruta_abbs_nocontaminants_finaldecision <- as.data.frame(boruta_abbs_nocontaminant_survfit$finalDecision)
+boruta_abbs_consensus_finaldecision <- as.data.frame(boruta_abbs_consensus_survfit$finalDecision)
+boruta_abbs_allcontaminants_finaldecision <- as.data.frame(boruta_abbs_allcontaminants_survfit$finalDecision)
+
+write.csv(file = "Boruta_ABBS_Nocontaminants_FinalDecision.csv", boruta_abbs_nocontaminants_finaldecision)
+write.csv(file = "Boruta_ABBS_Consensus_FinalDecision.csv", boruta_abbs_consensus_finaldecision)
+write.csv(file = "Boruta_ABBS_Allcontaminants_FinalDecision.csv", boruta_abbs_allcontaminants_finaldecision)
+```
+
+## 14.5 NMDS based on endpoint ----
+
+```{r}
+nmds_progress_metadata <- read.csv("Progression_NMDS_Metadata.csv", row.names = 1)
+```
+
+This metadata file has standardised progression terminology so that it can be factorised 
+### 14.5.1 Keep all samples that have "No progress" in them ----
+
+```{r}
+nmds_nocontaminants_df$progress <- c(nmds_progress_metadata$Overall_Progression)
+nmds_nocontaminants_df$progress_reason <- c(nmds_progress_metadata$Progress_Reason)
+nmds_stress_nocontaminants <- nmds_nocontaminants_result$stress
+ggplot(nmds_nocontaminants_df, aes(x = MDS1, y = MDS2, color = progress_reason, label = rownames(salter_nocontaminants_clean))) +
+  geom_point(size = 3) +
+  labs(title = "NMDS Plot with K-means Clusters with Progress Info - No contaminant Dataframe", 
+       subtitle = paste("NMDS Stress =", round(nmds_stress_nocontaminants, 3)), x = "NMDS1", y = "NMDS2") +
+  theme_minimal() +
+  scale_color_manual(values = c("blue", "red", "black", "green", "orange", "pink", "cyan", "darkblue")) +
+  geom_text(size = 2, position = position_dodge(width =0.9), hjust=1.5)
+
+nmds_consensus_df$progress <- c(nmds_progress_metadata$Overall_Progression)
+nmds_consensus_df$progress_reason <- c(nmds_progress_metadata$Progress_Reason)
+nmds_stress_consensus <- nmds_consensus_result$stress
+ggplot(nmds_consensus_df, aes(x = MDS1, y = MDS2, color = progress_reason, label = rownames(salter_consensus_clean))) +
+  geom_point(size = 3) +
+  labs(title = "NMDS Plot with K-means Clusters with Progress Info - Consensus Dataframe", 
+       subtitle = paste("NMDS Stress =", round(nmds_stress_consensus, 3)), x = "NMDS1", y = "NMDS2") +
+  theme_minimal() +
+  scale_color_manual(values = c("blue", "red", "black", "green", "orange", "pink", "cyan", "darkblue")) +
+  geom_text(size = 2, position = position_dodge(width =0.9), hjust=1.5)
+
+
+nmds_allcontaminants_df$progress <- c(nmds_progress_metadata$Overall_Progression)
+nmds_allcontaminants_df$progress_reason <- c(nmds_progress_metadata$Progress_Reason)
+nmds_stress_allcontaminants <- nmds_allcontaminants_result$stress
+ggplot(nmds_allcontaminants_df, aes(x = MDS1, y = MDS2, color = progress_reason, label = rownames(salter_allcontaminants_clean))) +
+  geom_point(size = 3) +
+  labs(title = "NMDS Plot with K-means Clusters with Progress Info - All Contaminants Dataframe", 
+       subtitle = paste("NMDS Stress =", round(nmds_stress_allcontaminants, 3)), x = "NMDS1", y = "NMDS2") +
+  theme_minimal() +
+  scale_color_manual(values = c("blue", "red", "black", "green", "orange", "pink", "cyan", "darkblue")) +
+  geom_text(size = 2, position = position_dodge(width =0.9), hjust=1.5)
+```
+
+### 14.5.2 Remove all the no progress and plot the remaining ----
+
+```{r}
+nmds_nocontaminants_df_progress <- nmds_nocontaminants_df %>% filter(progress_reason != "No_progress")
+nmds_consensus_df_progress <- nmds_consensus_df %>% filter(progress_reason != "No_progress")
+nmds_allcontaminants_df_progress <- nmds_allcontaminants_df %>% filter(progress_reason != "No_progress")
+
+ggplot(nmds_nocontaminants_df_progress, aes(x = MDS1, y = MDS2, color = progress_reason, label = rownames(nmds_nocontaminants_df_progress))) +
+  geom_point(size = 3) +
+  labs(title = "NMDS Plot with K-means Clusters with Progress Info (Only Progressed Samples) - No Contaminants Dataframe", 
+       subtitle = paste("NMDS Stress =", round(nmds_stress_nocontaminants, 3)), x = "NMDS1", y = "NMDS2") +
+  theme_minimal() +
+  scale_color_manual(values = c("blue", "red", "black", "green", "orange", "pink", "cyan", "darkblue")) +
+  geom_text(size = 2, position = position_dodge(width =0.9), hjust=1.5)
+
+ggplot(nmds_consensus_df_progress, aes(x = MDS1, y = MDS2, color = progress_reason, label = rownames(nmds_consensus_df_progress))) +
+  geom_point(size = 3) +
+  labs(title = "NMDS Plot with K-means Clusters with Progress Info (Only Progressed Samples) - Consensus Dataframe", 
+       subtitle = paste("NMDS Stress =", round(nmds_stress_consensus, 3)), x = "NMDS1", y = "NMDS2") +
+  theme_minimal() +
+  scale_color_manual(values = c("blue", "red", "black", "green", "orange", "pink", "cyan", "darkblue")) +
+  geom_text(size = 2, position = position_dodge(width =0.9), hjust=1.5)
+
+ggplot(nmds_allcontaminants_df_progress, aes(x = MDS1, y = MDS2, color = progress_reason, label = rownames(nmds_allcontaminants_df_progress))) +
+  geom_point(size = 3) +
+  labs(title = "NMDS Plot with K-means Clusters with Progress Info (Only Progressed Samples) - All Contaminants Dataframe", 
+       subtitle = paste("NMDS Stress =", round(nmds_stress_allcontaminants, 3)), x = "NMDS1", y = "NMDS2") +
+  theme_minimal() +
+  scale_color_manual(values = c("blue", "red", "black", "green", "orange", "pink", "cyan", "darkblue")) +
+  geom_text(size = 2, position = position_dodge(width =0.9), hjust=1.5)
+```
+
+# 15. Tabulate and Plot Progression Samples in Each of the Clusters -----
+## 15.1 Take the salter_nocontaminants_clean dataframe and add the progression and metastasis columns from metadata to it ----
+
+```{r}
+salter_nocontaminants_clean_metadata <- cbind(salter_nocontaminants_clean, Overall_Progression = hila_samples_metadata$Overall_Progression)
+salter_nocontaminants_cluster1 <- salter_nocontaminants_clean_metadata %>% filter(cluster == 1)
+salter_nocontaminants_cluster2 <- salter_nocontaminants_clean_metadata %>% filter(cluster == 2)
+
+salter_consensus_clean_metadata <- cbind(salter_consensus_clean, Overall_Progression = hila_samples_metadata$Overall_Progression)
+salter_consensus_cluster1 <- salter_consensus_clean_metadata %>% filter(cluster == 1)
+salter_consensus_cluster2 <- salter_consensus_clean_metadata %>% filter(cluster == 2)
+
+salter_allcontaminants_clean_metadata <- cbind(salter_allcontaminants_clean, Overall_Progression = hila_samples_metadata$Overall_Progression)
+salter_allcontaminants_cluster1 <- salter_allcontaminants_clean_metadata %>% filter(cluster == 1)
+salter_allcontaminants_cluster2 <- salter_allcontaminants_clean_metadata %>% filter(cluster == 2)
+```
+
+## 15.2 Tables to see Progression in each of the clusters ----
+
+```{r}
+table(salter_nocontaminants_cluster1$Overall_Progression)
+table(salter_nocontaminants_cluster2$Overall_Progression)
+
+table(salter_consensus_cluster1$Overall_Progression)
+table(salter_consensus_cluster2$Overall_Progression)
+
+table(salter_allcontaminants_cluster1$Overall_Progression)
+table(salter_allcontaminants_cluster2$Overall_Progression)
+```
+
+## 15.3 Plot it into a bar graph ----
+
+```{r}
+salter_nocontaminants_barplot <- salter_nocontaminants_clean_metadata %>%
+  group_by(cluster, Overall_Progression) %>%
+  summarise(count = n()) %>%
+  ungroup()
+salter_nocontaminants_barplot <- salter_nocontaminants_barplot %>%
+  group_by(cluster) %>%
+  mutate(percentage = count / sum(count) * 100) %>%
+  ungroup()
+ggplot(salter_nocontaminants_barplot, aes(x = as.factor(cluster), y = percentage, fill = Overall_Progression)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Cluster", y = "Percentage", fill = "Progression Status") +
+  ggtitle("Percentage of Progressed and Not Progressed Samples (No Contaminants)") +
+  theme_minimal()
+
+
+salter_consensus_barplot <- salter_consensus_clean_metadata %>%
+  group_by(cluster, Overall_Progression) %>%
+  summarise(count = n()) %>%
+  ungroup()
+salter_consensus_barplot <- salter_consensus_barplot %>%
+  group_by(cluster) %>%
+  mutate(percentage = count / sum(count) * 100) %>%
+  ungroup()
+ggplot(salter_consensus_barplot, aes(x = as.factor(cluster), y = percentage, fill = Overall_Progression)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Cluster", y = "Percentage", fill = "Progression Status") +
+  ggtitle("Percentage of Progressed and Not Progressed Samples (Consensus)") +
+  theme_minimal()
+
+
+salter_allcontaminants_barplot <- salter_allcontaminants_clean_metadata %>%
+  group_by(cluster, Overall_Progression) %>%
+  summarise(count = n()) %>%
+  ungroup()
+salter_allcontaminants_barplot <- salter_allcontaminants_barplot %>%
+  group_by(cluster) %>%
+  mutate(percentage = count / sum(count) * 100) %>%
+  ungroup()
+ggplot(salter_allcontaminants_barplot, aes(x = as.factor(cluster), y = percentage, fill = Overall_Progression)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Cluster", y = "Percentage", fill = "Progression Status") +
+  ggtitle("Percentage of Progressed and Not Progressed Samples (All Contaminants)") +
+  theme_minimal()
+```
+
+# 16. Boruta based on clusters ----
+## 16.1 Encode metastasis and cluster as factors ----
+
+```{r}
+salter_nocontaminants_clean_metadata$cluster <- as.factor(salter_nocontaminants_clean_metadata$cluster)
+salter_consensus_clean_metadata$cluster <- as.factor(salter_consensus_clean_metadata$cluster)
+salter_allcontaminants_clean_metadata$cluster <- as.factor(salter_allcontaminants_clean_metadata$cluster)
+
+salter_nocontaminants_clean_metadata$Overall_Progression <- as.factor(salter_nocontaminants_clean_metadata$Overall_Progression)
+salter_consensus_clean_metadata$Overall_Progression <- as.factor(salter_consensus_clean_metadata$Overall_Progression)
+salter_allcontaminants_clean_metadata$Overall_Progression <- as.factor(salter_allcontaminants_clean_metadata$Overall_Progression)
+```
+
+## 16.2 Create a Boruta dataset - you want to find out which ones are associated with which cluster -----
+
+```{r}
+boruta_nocontaminants <- subset(salter_nocontaminants_clean_metadata, select = -c(cluster, Overall_Progression))
+nocontaminants_target <- salter_nocontaminants_clean_metadata$cluster
+boruta_nocontaminants_result <- Boruta(salter_nocontaminants_clean_metadata$cluster ~ ., data = boruta_nocontaminants, doTrace = 2, maxRuns=10000)
+boruta_nocontaminants_result
+plot(boruta_nocontaminants_result)
+boruta_nocontaminants_finaldecision <- as.data.frame(boruta_nocontaminants_result$finalDecision)
+boruta_nocontaminants_ImpHistory <- as.data.frame(boruta_nocontaminants_result$ImpHistory)
+
+boruta_consensus <- subset(salter_consensus_clean_metadata, select = -c(cluster, Overall_Progression))
+consensus_target <- salter_consensus_clean_metadata$cluster
+boruta_consensus_result <- Boruta(salter_consensus_clean_metadata$cluster ~ ., data = boruta_consensus, doTrace = 2, maxRuns=10000)
+boruta_consensus_result
+plot(boruta_consensus_result)
+boruta_consensus_finaldecision <- as.data.frame(boruta_consensus_result$finalDecision)
+boruta_consensus_ImpHistory <- as.data.frame(boruta_consensus_result$ImpHistory)
+
+boruta_allcontaminants <- subset(salter_allcontaminants_clean_metadata, select = -c(cluster, Overall_Progression))
+allcontaminants_target <- salter_allcontaminants_clean_metadata$cluster
+boruta_allcontaminants_result <- Boruta(salter_allcontaminants_clean_metadata$cluster ~ ., data = boruta_allcontaminants, doTrace = 2, maxRuns=10000)
+boruta_allcontaminants_result
+plot(boruta_allcontaminants_result)
+boruta_allcontaminants_finaldecision <- as.data.frame(boruta_allcontaminants_result$finalDecision)
+boruta_allcontaminants_ImpHistory <- as.data.frame(boruta_allcontaminants_result$ImpHistory)
+```
+
+## 16.3 Check the Boruta results for each of the dataframes and see which bacteria are important in determining clusters ----
+
+```{r}
+boruta_nocontaminants_confirmed <- boruta_nocontaminants_finaldecision %>% filter(boruta_nocontaminants_finaldecision$`boruta_nocontaminants_result$finalDecision`== "Confirmed")
+boruta_consensus_confirmed <- boruta_consensus_finaldecision %>% filter(boruta_consensus_finaldecision$`boruta_consensus_result$finalDecision`== "Confirmed")
+boruta_allcontaminants_confirmed <- boruta_allcontaminants_finaldecision %>% filter(boruta_allcontaminants_finaldecision$`boruta_allcontaminants_result$finalDecision`== "Confirmed")
+
+genus_nocontaminants_confirmed <- c(rownames(boruta_nocontaminants_confirmed))
+genus_consensus_confirmed <- c(rownames(boruta_consensus_confirmed))
+genus_allcontaminants_confirmed <- c(rownames(boruta_allcontaminants_confirmed))
+
+write.csv(file = "Boruta_Clusters_NoContaminants_Confirmed.csv", genus_nocontaminants_confirmed)
+write.csv(file = "Boruta_Clusters_Consensus_Confirmed.csv", genus_consensus_confirmed)
+write.csv(file = "Boruta_Clusters_AllContaminants_Confirmed.csv", genus_allcontaminants_confirmed)
+```
+
+## 16.4 Get the Boruta importance for only positives ----
+
+```{r}
+confirmed_nocontaminants <- getSelectedAttributes(boruta_nocontaminants_result, withTentative = F)
+confirmed_importance_nocontaminants <- attStats(boruta_nocontaminants_result)
+confirmed_importance_nocontaminants <- confirmed_importance_nocontaminants[confirmed_importance_nocontaminants$decision == "Confirmed", ]
+ggplot(confirmed_importance_nocontaminants, aes(x = reorder(rownames(confirmed_importance_nocontaminants), meanImp), y = meanImp)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Importance of Confirmed Genera by Boruta - No contaminants",
+       x = "Features",
+       y = "Mean Importance")
+
+confirmed_consensus <- getSelectedAttributes(boruta_consensus_result, withTentative = F)
+confirmed_importance_consensus <- attStats(boruta_consensus_result)
+confirmed_importance_consensus <- confirmed_importance_consensus[confirmed_importance_consensus$decision == "Confirmed", ]
+ggplot(confirmed_importance_consensus, aes(x = reorder(rownames(confirmed_importance_consensus), meanImp), y = meanImp)) +
+  geom_bar(stat = "identity", fill = "orange") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Importance of Confirmed Genera by Boruta - Consensus",
+       x = "Features",
+       y = "Mean Importance")
+
+confirmed_allcontaminants <- getSelectedAttributes(boruta_allcontaminants_result, withTentative = F)
+confirmed_importance_allcontaminants <- attStats(boruta_allcontaminants_result)
+confirmed_importance_allcontaminants <- confirmed_importance_allcontaminants[confirmed_importance_allcontaminants$decision == "Confirmed", ]
+ggplot(confirmed_importance_allcontaminants, aes(x = reorder(rownames(confirmed_importance_allcontaminants), meanImp), y = meanImp)) +
+  geom_bar(stat = "identity", fill = "red") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Importance of Confirmed Genera by Boruta - All contaminants",
+       x = "Features",
+       y = "Mean Importance")
+```
+
+## 16.5 Filter the salter_cluster dataframes based on the genera ----
+
+```{r}
+salter_nocontaminants_cluster1_filt <- salter_nocontaminants_cluster1[, c(genus_nocontaminants_confirmed)]
+salter_nocontaminants_cluster2_filt <- salter_nocontaminants_cluster2[, c(genus_nocontaminants_confirmed)]
+
+salter_consensus_cluster1_filt <- salter_consensus_cluster1[, c(genus_consensus_confirmed)]
+salter_consensus_cluster2_filt <- salter_consensus_cluster2[, c(genus_consensus_confirmed)]
+
+salter_allcontaminants_cluster1_filt <- salter_allcontaminants_cluster1[, c(genus_allcontaminants_confirmed)]
+salter_allcontaminants_cluster2_filt <- salter_allcontaminants_cluster2[, c(genus_allcontaminants_confirmed)]
+```
+
+## 16.6 Get all the ColSums as a dataframe and bind by rows for each dataframe ----
+
+```{r}
+salter_nocontaminants_cluster1_filt_totals <- as.data.frame(colSums(salter_nocontaminants_cluster1_filt))
+salter_nocontaminants_cluster2_filt_totals <- as.data.frame(colSums(salter_nocontaminants_cluster2_filt))
+salter_nocontaminants_filt_totals <- merge(salter_nocontaminants_cluster1_filt_totals, salter_nocontaminants_cluster2_filt_totals, by="row.names", all = TRUE)
+rownames(salter_nocontaminants_filt_totals) <- salter_nocontaminants_filt_totals$Row.names
+salter_nocontaminants_filt_totals <- salter_nocontaminants_filt_totals[,-1]
+colnames(salter_nocontaminants_filt_totals) <- c("Cluster1", "Cluster2")
+
+salter_consensus_cluster1_filt_totals <- as.data.frame(colSums(salter_consensus_cluster1_filt))
+salter_consensus_cluster2_filt_totals <- as.data.frame(colSums(salter_consensus_cluster2_filt))
+salter_consensus_filt_totals <- merge(salter_consensus_cluster1_filt_totals, salter_consensus_cluster2_filt_totals, by="row.names", all = TRUE)
+rownames(salter_consensus_filt_totals) <- salter_consensus_filt_totals$Row.names
+salter_consensus_filt_totals <- salter_consensus_filt_totals[,-1]
+colnames(salter_consensus_filt_totals) <- c("Cluster1", "Cluster2")
+
+salter_allcontaminants_cluster1_filt_totals <- as.data.frame(colSums(salter_allcontaminants_cluster1_filt))
+salter_allcontaminants_cluster2_filt_totals <- as.data.frame(colSums(salter_allcontaminants_cluster2_filt))
+salter_allcontaminants_filt_totals <- merge(salter_allcontaminants_cluster1_filt_totals, salter_allcontaminants_cluster2_filt_totals, by="row.names", all = TRUE)
+rownames(salter_allcontaminants_filt_totals) <- salter_allcontaminants_filt_totals$Row.names
+salter_allcontaminants_filt_totals <- salter_allcontaminants_filt_totals[,-1]
+colnames(salter_allcontaminants_filt_totals) <- c("Cluster1", "Cluster2")
+```
+
+## 16.7 Plot this in a barplot ----
+For each dataframe define how many are in clusters 1 and 2 before plotting
+
+```{r}
+nocontaminants_cluster1 <- 23
+nocontaminants_cluster2 <- 21
+salter_nocontaminants_filt_totals$Cluster1 <- salter_nocontaminants_filt_totals$Cluster1/nocontaminants_cluster1*100
+salter_nocontaminants_filt_totals$Cluster2 <- salter_nocontaminants_filt_totals$Cluster2/nocontaminants_cluster2*100
+salter_nocontaminants_filt_totals$Genus <- rownames(salter_nocontaminants_filt_totals)
+salter_nocontaminants_filt_totals_melted <- melt(salter_nocontaminants_filt_totals, id.vars = "Genus", variable.name = "Cluster", value.name = "Percentage")
+ggplot(salter_nocontaminants_filt_totals_melted, aes(x = Genus, y = Percentage, fill = Cluster)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Percentage of Genus in Clusters - No Contaminants",
+       x = "Genus",
+       y = "Percentage of Samples",
+       fill = "Cluster") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+consensus_cluster1 <- 23
+consensus_cluster2 <- 21
+salter_consensus_filt_totals$Cluster1 <- salter_consensus_filt_totals$Cluster1/consensus_cluster1*100
+salter_consensus_filt_totals$Cluster2 <- salter_consensus_filt_totals$Cluster2/consensus_cluster2*100
+salter_consensus_filt_totals$Genus <- rownames(salter_consensus_filt_totals)
+salter_consensus_filt_totals_melted <- melt(salter_consensus_filt_totals, id.vars = "Genus", variable.name = "Cluster", value.name = "Percentage")
+ggplot(salter_consensus_filt_totals_melted, aes(x = Genus, y = Percentage, fill = Cluster)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Percentage of Genus in Clusters - Consensus",
+       x = "Genus",
+       y = "Percentage of Samples",
+       fill = "Cluster") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+allcontaminants_cluster1 <- 21
+allcontaminants_cluster2 <- 23
+salter_allcontaminants_filt_totals$Cluster1 <- salter_allcontaminants_filt_totals$Cluster1/allcontaminants_cluster1*100
+salter_allcontaminants_filt_totals$Cluster2 <- salter_allcontaminants_filt_totals$Cluster2/allcontaminants_cluster2*100
+salter_allcontaminants_filt_totals$Genus <- rownames(salter_allcontaminants_filt_totals)
+salter_allcontaminants_filt_totals_melted <- melt(salter_allcontaminants_filt_totals, id.vars = "Genus", variable.name = "Cluster", value.name = "Percentage")
+ggplot(salter_allcontaminants_filt_totals_melted, aes(x = Genus, y = Percentage, fill = Cluster)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Percentage of Genus in Clusters - All Contaminants",
+       x = "Genus",
+       y = "Percentage of Samples",
+       fill = "Cluster") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+# 17. Survival Analysis based on Clusters ----
+## 17.1 Consider date of progression and not death ----
+
+```{r}
+metadata_nodeath <- read.csv("Metadata_16SDataset_NoDeath.csv", row.names=1)
+
+metadata_nodeath$date_of_enrollment <- as.Date(metadata_nodeath$date_of_enrollment, format = "%d/%m/%Y")
+metadata_nodeath$date_of_death <- as.Date(metadata_nodeath$date_of_death, format = "%d/%m/%Y")
+metadata_nodeath$Overall_Progression_Date <- as.Date(metadata_nodeath$Overall_Progression_Date, format = "%d/%m/%Y")
+metadata_nodeath$last_follow_up_date <- as.Date(metadata_nodeath$last_follow_up_date, format = "%d/%m/%Y")
+metadata_nodeath$days_to_last_follow_up <- metadata_nodeath$last_follow_up_date - metadata_nodeath$date_of_enrollment
+metadata_nodeath$days_to_progression <- metadata_nodeath$Overall_Progression_Date - metadata_nodeath$date_of_enrollment
+
+table(metadata_nodeath$vital_status)
+table(metadata_nodeath$Overall_Progression)
+
+metadata_nodeath$progressed <- ifelse(metadata_nodeath$Overall_Progression == "Progressed", TRUE, FALSE)
+table(metadata_nodeath$progressed)
+metadata_nodeath$overall_progression_free <- ifelse(metadata_nodeath$Overall_Progression == "Not_Progressed",
+                                                    metadata_nodeath$days_to_last_follow_up,
+                                                    metadata_nodeath$days_to_progression)
+```
+
+HILA samples Metadata 
+
+```{r}
+hila_samples_metadata_nodeath <- metadata_nodeath %>% filter(rownames(metadata_nodeath) %in% hila_samples)
+```
+
+## 17.2 Add cluster data to the samples for each of the dataframes ----
+
+```{r}
+clusters_nocontaminants.df <- as.data.frame(kmeans_nocontaminants$cluster)
+hila_samples_metadata_nodeath_nocontaminants <- merge(hila_samples_metadata_nodeath, clusters_nocontaminants.df, by = "row.names")
+rownames(hila_samples_metadata_nodeath_nocontaminants) <- hila_samples_metadata_nodeath_nocontaminants$Row.names
+hila_samples_metadata_nodeath_nocontaminants$Row.names <- NULL
+colnames(hila_samples_metadata_nodeath_nocontaminants)[47] <- "Cluster"
+
+clusters_consensus.df <- as.data.frame(kmeans_consensus$cluster)
+hila_samples_metadata_nodeath_consensus <- merge(hila_samples_metadata_nodeath, clusters_consensus.df, by = "row.names")
+rownames(hila_samples_metadata_nodeath_consensus) <- hila_samples_metadata_nodeath_consensus$Row.names
+hila_samples_metadata_nodeath_consensus$Row.names <- NULL
+colnames(hila_samples_metadata_nodeath_consensus)[47] <- "Cluster"
+
+clusters_allcontaminants.df <- as.data.frame(kmeans_allcontaminants$cluster)
+hila_samples_metadata_nodeath_allcontaminants <- merge(hila_samples_metadata_nodeath, clusters_allcontaminants.df, by = "row.names")
+rownames(hila_samples_metadata_nodeath_allcontaminants) <- hila_samples_metadata_nodeath_allcontaminants$Row.names
+hila_samples_metadata_nodeath_allcontaminants$Row.names <- NULL
+colnames(hila_samples_metadata_nodeath_allcontaminants)[47] <- "Cluster"
+```
+
+## 17.3 Fit the Survival Curve to Progression ----
+
+```{r}
+survfit_nocontaminants_nodeath <- survfit(Surv(overall_progression_free, progressed) ~ Cluster, data = hila_samples_metadata_nodeath_nocontaminants)
+survfit_nocontaminants_nodeath
+ggsurvplot(survfit_nocontaminants_nodeath,
+           data = hila_samples_metadata_nodeath_nocontaminants,
+           pval = TRUE,
+           risk.table = TRUE)
+
+survfit_consensus_nodeath <- survfit(Surv(overall_progression_free, progressed) ~ Cluster, data = hila_samples_metadata_nodeath_consensus)
+survfit_consensus_nodeath
+ggsurvplot(survfit_consensus_nodeath,
+           data = hila_samples_metadata_nodeath_consensus,
+           pval = TRUE,
+           risk.table = TRUE)
+
+survfit_allcontaminants_nodeath <- survfit(Surv(overall_progression_free, progressed) ~ Cluster, data = hila_samples_metadata_nodeath_allcontaminants)
+survfit_allcontaminants_nodeath
+ggsurvplot(survfit_allcontaminants_nodeath,
+           data = hila_samples_metadata_nodeath_allcontaminants,
+           pval = TRUE,
+           risk.table = TRUE)
+```
+
+# 18. Fit the Survfit object back into Boruta ----
+## 18.1 This step has already been done in 14.1 ----
+## 18.2 This step has already been done in 14.2 ----
+## 18.3 Survival Object ----
+
+```{r}
+survival_obj_clusters_nocontaminants <- Surv(hila_samples_metadata_nodeath_nocontaminants$overall_progression_free,
+                                             hila_samples_metadata_nodeath_nocontaminants$progressed)
+survival_obj_clusters_consensus <- Surv(hila_samples_metadata_nodeath_consensus$overall_progression_free,
+                                        hila_samples_metadata_nodeath_consensus$progressed)
+survival_obj_clusters_allcontaminants <- Surv(hila_samples_metadata_nodeath_allcontaminants$overall_progression_free,
+                                              hila_samples_metadata_nodeath_allcontaminants$progressed)
+```
+
+## 18.4 Boruta Using SurvFit object ----
+
+```{r}
+boruta_nocontaminant_survfit <- Boruta(nocontaminants_subset, survival_obj_clusters_nocontaminants, 
+                                       pValue = 0.05, maxRuns = 10000, doTrace = 2)
+
+boruta_consensus_survfit <- Boruta(consensus_subset, survival_obj_clusters_consensus, 
+                                       pValue = 0.05, maxRuns = 10000, doTrace = 2)
+
+boruta_allcontaminants_survfit <- Boruta(allcontaminants_subset, survival_obj_clusters_allcontaminants, 
+                                       pValue = 0.05, maxRuns = 10000, doTrace = 2)
+
+boruta_clusters_nocontaminants_finaldecision <- as.data.frame(boruta_nocontaminant_survfit$finalDecision)
+boruta_clusters_consensus_finaldecision <- as.data.frame(boruta_consensus_survfit$finalDecision)
+boruta_clusters_allcontaminants_finaldecision <- as.data.frame(boruta_allcontaminants_survfit$finalDecision)
+```
+
+
+# 19. Winkia Survival Curve ----
+## 19.1 No contaminants Dataframe
+
+```{r}
+winkia_subset_nocontaminants <- data.frame(Overall_Progression_free = c(combined_data_nocontaminants$overall_progression_free), 
+                                              Progressed = c(combined_data_nocontaminants$progressed),
+                                              Winkia = c(combined_data_nocontaminants$Winkia))
+winkia_rownames <- c(rownames(combined_data_nocontaminants))
+rownames(winkia_subset_nocontaminants) <- winkia_rownames
+
+winkia_subset_nocontaminants$Progressed <- as.numeric(winkia_subset_nocontaminants$Progressed)
+```
+
+1 - No progression 2- Progressed
+### 19.1.1 Create a Surv object
+
+```{r}
+winkia_nocontaminants_surv_object <- Surv(time = winkia_subset_nocontaminants$Overall_Progression_free, 
+                                          event = winkia_subset_nocontaminants$Progressed)
+```
+
+### 19.1.2 Fit the Kaplan-Meier survival curve by Winkia status
+
+```{r}
+winkia_nocontaminants_fit <- survfit(winkia_nocontaminants_surv_object ~ Winkia, data = winkia_subset_nocontaminants)
+```
+
+### 19.1.3 Plot the survival curve
+
+```{r}
+ggsurvplot(winkia_nocontaminants_fit, data = winkia_subset_nocontaminants, 
+           pval = TRUE, 
+           conf.int = TRUE,
+           legend.title = "Winkia Status",
+           legend.labs = c("Absent (0)", "Present (1)"),
+           xlab = "Progression-Free Days",
+           ylab = "Survival Probability",
+           ggtheme = theme_minimal())
+```
+Stick the table of how many samples are Winkia positive
+
+## 19.2 Consensus Dataframe
+
+```{r}
+winkia_subset_consensus <- data.frame(Overall_Progression_free = c(combined_data_consensus$overall_progression_free), 
+                                              Progressed = c(combined_data_consensus$progressed),
+                                              Winkia = c(combined_data_consensus$Winkia))
+winkia_rownames <- c(rownames(combined_data_consensus))
+rownames(winkia_subset_consensus) <- winkia_rownames
+
+winkia_subset_consensus$Progressed <- as.numeric(winkia_subset_consensus$Progressed)
+```
+
+1 - No progression 2- Progressed
+### 19.2.1 Create a Surv object
+
+```{r}
+winkia_consensus_surv_object <- Surv(time = winkia_subset_consensus$Overall_Progression_free, 
+                                          event = winkia_subset_consensus$Progressed)
+```
+
+### 19.2.2 Fit the Kaplan-Meier survival curve by Winkia status
+
+```{r}
+winkia_consensus_fit <- survfit(winkia_consensus_surv_object ~ Winkia, data = winkia_subset_consensus)
+```
+
+### 19.2.3 Plot the survival curve
+
+```{r}
+ggsurvplot(winkia_consensus_fit, data = winkia_subset_consensus, 
+           pval = TRUE, 
+           conf.int = TRUE,
+           legend.title = "Winkia Status",
+           legend.labs = c("Absent (0)", "Present (1)"),
+           xlab = "Progression-Free Days",
+           ylab = "Survival Probability",
+           ggtheme = theme_minimal())
+```
+
+## 19.3 All contaminants Dataframe
+
+```{r}
+winkia_subset_allcontaminants <- data.frame(Overall_Progression_free = c(combined_data_allcontaminants$overall_progression_free), 
+                                           Progressed = c(combined_data_allcontaminants$progressed),
+                                           Winkia = c(combined_data_allcontaminants$Winkia))
+winkia_rownames <- c(rownames(combined_data_allcontaminants))
+rownames(winkia_subset_allcontaminants) <- winkia_rownames
+
+winkia_subset_allcontaminants$Progressed <- as.numeric(winkia_subset_allcontaminants$Progressed)
+```
+
+1 - No progression 2- Progressed
+### 19.3.1. Create a Surv object
+
+```{r}
+winkia_allcontaminants_surv_object <- Surv(time = winkia_subset_allcontaminants$Overall_Progression_free, 
+                                          event = winkia_subset_allcontaminants$Progressed)
+```
+
+### 19.3.2 Fit the Kaplan-Meier survival curve by Winkia status
+
+```{r}
+winkia_allcontaminants_fit <- survfit(winkia_allcontaminants_surv_object ~ Winkia, data = winkia_subset_allcontaminants)
+```
+
+### 19.3.3 Plot the survival curve
+
+```{r}
+ggsurvplot(winkia_allcontaminants_fit, data = winkia_subset_allcontaminants, 
+           pval = TRUE, 
+           conf.int = TRUE,
+           legend.title = "Winkia Status",
+           legend.labs = c("Absent (0)", "Present (1)"),
+           xlab = "Progression-Free Days",
+           ylab = "Survival Probability",
+           ggtheme = theme_minimal())
+```
+
+
+# 20. Acinetobacter Survival Curve ----
+## 20.1 Consensus Dataframe
+
+```{r}
+acinetobacter_subset_consensus <- data.frame(Overall_Progression_free = c(combined_data_consensus$overall_progression_free), 
+                                              Progressed = c(combined_data_consensus$progressed),
+                                              Acinetobacter = c(combined_data_consensus$Acinetobacter))
+acinetobacter_rownames <- c(rownames(combined_data_consensus))
+rownames(acinetobacter_subset_consensus) <- acinetobacter_rownames
+
+acinetobacter_subset_consensus$Progressed <- as.numeric(acinetobacter_subset_consensus$Progressed)
+```
+
+1 - No progression 2- Progressed
+### 19.1.1 Create a Surv object
+
+```{r}
+acinetobacter_consensus_surv_object <- Surv(time = acinetobacter_subset_consensus$Overall_Progression_free, 
+                                          event = acinetobacter_subset_consensus$Progressed)
+```
+
+### 19.1.2 Fit the Kaplan-Meier survival curve by Winkia status
+
+```{r}
+acinetobacter_consensus_fit <- survfit(acinetobacter_consensus_surv_object ~ Acinetobacter, data = acinetobacter_subset_consensus)
+```
+
+### 19.1.3 Plot the survival curve
+
+```{r}
+ggsurvplot(acinetobacter_consensus_fit, data = acinetobacter_subset_consensus,
+           pval = TRUE, 
+           conf.int = TRUE,
+           legend.title = "Acinetobacter Status",
+           legend.labs = c("Absent (0)", "Present (1)"),
+           xlab = "Progression-Free Days",
+           ylab = "Survival Probability",
+           ggtheme = theme_minimal())
+```
+
+## 20.2 All Contaminant Dataframe
+
+```{r}
+acinetobacter_subset_allcontaminants <- data.frame(Overall_Progression_free = c(combined_data_allcontaminants$overall_progression_free), 
+                                              Progressed = c(combined_data_allcontaminants$progressed),
+                                              Acinetobacter = c(combined_data_allcontaminants$Acinetobacter))
+acinetobacter_rownames <- c(rownames(combined_data_allcontaminants))
+rownames(acinetobacter_subset_allcontaminants) <- acinetobacter_rownames
+
+acinetobacter_subset_allcontaminants$Progressed <- as.numeric(acinetobacter_subset_allcontaminants$Progressed)
+```
+
+1 - No progression 2- Progressed
+### 20.2.1 Create a Surv object
+
+```{r}
+acinetobacter_allcontaminants_surv_object <- Surv(time = acinetobacter_subset_allcontaminants$Overall_Progression_free, 
+                                          event = acinetobacter_subset_allcontaminants$Progressed)
+```
+
+### 20.2.2 Fit the Kaplan-Meier survival curve by Winkia status
+
+```{r}
+acinetobacter_allcontaminants_fit <- survfit(acinetobacter_allcontaminants_surv_object ~ Acinetobacter, data = acinetobacter_subset_allcontaminants)
+```
+
+### 20.2.3 Plot the survival curve
+
+```{r}
+ggsurvplot(acinetobacter_allcontaminants_fit, data = acinetobacter_subset_allcontaminants,
+           pval = TRUE, 
+           conf.int = TRUE,
+           legend.title = "Acinetobacter Status",
+           legend.labs = c("Absent (0)", "Present (1)"),
+           xlab = "Progression-Free Days",
+           ylab = "Survival Probability",
+           ggtheme = theme_minimal())
+```
+
+# 21. Veillonella Survival Curve ----
+## 21.1 Consensus Dataframe
+
+```{r}
+veillonella_subset_consensus <- data.frame(Overall_Progression_free = c(combined_data_consensus$overall_progression_free), 
+                                              Progressed = c(combined_data_consensus$progressed),
+                                              Veillonella = c(combined_data_consensus$Veillonella))
+veillonella_rownames <- c(rownames(combined_data_consensus))
+rownames(veillonella_subset_consensus) <- veillonella_rownames
+
+veillonella_subset_consensus$Progressed <- as.numeric(veillonella_subset_consensus$Progressed)
+```
+
+1 - No progression 2- Progressed
+### 21.1.1 Create a Surv object
+
+```{r}
+veillonella_consensus_surv_object <- Surv(time = veillonella_subset_consensus$Overall_Progression_free, 
+                                          event = veillonella_subset_consensus$Progressed)
+```
+
+### 21.1.2 Fit the Kaplan-Meier survival curve by Winkia status
+
+```{r}
+veillonella_consensus_fit <- survfit(veillonella_consensus_surv_object ~ Veillonella, data = veillonella_subset_consensus)
+```
+
+### 21.1.3 Plot the survival curve
+
+```{r}
+ggsurvplot(veillonella_consensus_fit, data = veillonella_subset_consensus,
+           pval = TRUE, 
+           conf.int = TRUE,
+           legend.title = "Veillonella Status",
+           legend.labs = c("Absent (0)", "Present (1)"),
+           xlab = "Progression-Free Days",
+           ylab = "Survival Probability",
+           ggtheme = theme_minimal())
+```
+
+## 21.2 All Contaminant Dataframe
+
+```{r}
+veillonella_subset_allcontaminants <- data.frame(Overall_Progression_free = c(combined_data_allcontaminants$overall_progression_free), 
+                                              Progressed = c(combined_data_allcontaminants$progressed),
+                                              Veillonella = c(combined_data_allcontaminants$Veillonella))
+veillonella_rownames <- c(rownames(combined_data_allcontaminants))
+rownames(veillonella_subset_allcontaminants) <- veillonella_rownames
+
+veillonella_subset_allcontaminants$Progressed <- as.numeric(veillonella_subset_allcontaminants$Progressed)
+```
+
+1 - No progression 2- Progressed
+### 20.2.1 Create a Surv object
+
+```{r}
+veillonella_allcontaminants_surv_object <- Surv(time = veillonella_subset_allcontaminants$Overall_Progression_free, 
+                                          event = veillonella_subset_allcontaminants$Progressed)
+```
+
+### 20.2.2 Fit the Kaplan-Meier survival curve by Winkia status
+
+```{r}
+veillonella_allcontaminants_fit <- survfit(veillonella_allcontaminants_surv_object ~ Veillonella, data = veillonella_subset_allcontaminants)
+```
+
+### 20.2.3 Plot the survival curve
+
+```{r}
+ggsurvplot(veillonella_allcontaminants_fit, data = veillonella_subset_allcontaminants,
+           pval = TRUE, 
+           conf.int = TRUE,
+           legend.title = "Veillonella Status",
+           legend.labs = c("Absent (0)", "Present (1)"),
+           xlab = "Progression-Free Days",
+           ylab = "Survival Probability",
+           ggtheme = theme_minimal())
+```
+
+
+# 22. Prevotella Survival Curve (PERFect) ----
+## 22.1 Consensus Dataframe
+
+```{r}
+prevotella_subset_consensus <- data.frame(Overall_Progression_free = c(combined_data_consensus$overall_progression_free), 
+                                              Progressed = c(combined_data_consensus$progressed),
+                                              Prevotella = c(combined_data_consensus$Prevotella))
+prevotella_rownames <- c(rownames(combined_data_consensus))
+rownames(prevotella_subset_consensus) <- prevotella_rownames
+
+prevotella_subset_consensus$Progressed <- as.numeric(prevotella_subset_consensus$Progressed)
+```
+
+1 - No progression 2- Progressed
+### 22.1.1 Create a Surv object
+
+```{r}
+prevotella_consensus_surv_object <- Surv(time = prevotella_subset_consensus$Overall_Progression_free, 
+                                          event = prevotella_subset_consensus$Progressed)
+```
+
+### 22.1.2 Fit the Kaplan-Meier survival curve by Winkia status
+
+```{r}
+prevotella_consensus_fit <- survfit(prevotella_consensus_surv_object ~ Prevotella, data = prevotella_subset_consensus)
+```
+
+### 22.1.3 Plot the survival curve
+
+```{r}
+ggsurvplot(prevotella_consensus_fit, data = prevotella_subset_consensus,
+           pval = TRUE, 
+           conf.int = TRUE,
+           legend.title = "Prevotella Status",
+           legend.labs = c("Absent (0)", "Present (1)"),
+           xlab = "Progression-Free Days",
+           ylab = "Survival Probability",
+           ggtheme = theme_minimal())
+```
+
+
+## 22.2 All Contaminant Dataframe
+
+```{r}
+prevotella_subset_allcontaminants <- data.frame(Overall_Progression_free = c(combined_data_allcontaminants$overall_progression_free), 
+                                              Progressed = c(combined_data_allcontaminants$progressed),
+                                              Prevotella = c(combined_data_allcontaminants$Prevotella))
+prevotella_rownames <- c(rownames(combined_data_allcontaminants))
+rownames(prevotella_subset_allcontaminants) <- prevotella_rownames
+
+prevotella_subset_allcontaminants$Progressed <- as.numeric(prevotella_subset_allcontaminants$Progressed)
+```
+
+1 - No progression 2- Progressed
+### 22.2.1 Create a Surv object
+
+```{r}
+prevotella_allcontaminants_surv_object <- Surv(time = prevotella_subset_allcontaminants$Overall_Progression_free, 
+                                          event = prevotella_subset_allcontaminants$Progressed)
+```
+
+### 22.2.2 Fit the Kaplan-Meier survival curve by Winkia status
+
+```{r}
+prevotella_allcontaminants_fit <- survfit(prevotella_allcontaminants_surv_object ~ Prevotella, data = prevotella_subset_allcontaminants)
+```
+
+### 22.2.3 Plot the survival curve
+
+```{r}
+ggsurvplot(prevotella_allcontaminants_fit, data = prevotella_subset_allcontaminants,
+           pval = TRUE, 
+           conf.int = TRUE,
+           legend.title = "Prevotella Status",
+           legend.labs = c("Absent (0)", "Present (1)"),
+           xlab = "Progression-Free Days",
+           ylab = "Survival Probability",
+           ggtheme = theme_minimal())
+```
+
+
+# 23. Enterococcus Survival Curve (PERFect) ----
+## 23.1 Consensus Dataframe
+
+```{r}
+enterococcus_subset_consensus <- data.frame(Overall_Progression_free = c(combined_data_consensus$overall_progression_free), 
+                                              Progressed = c(combined_data_consensus$progressed),
+                                              Enterococcus = c(combined_data_consensus$Enterococcus))
+enterococcus_rownames <- c(rownames(combined_data_consensus))
+rownames(enterococcus_subset_consensus) <- enterococcus_rownames
+
+enterococcus_subset_consensus$Progressed <- as.numeric(enterococcus_subset_consensus$Progressed)
+```
+
+1 - No progression 2- Progressed
+### 23.1.1 Create a Surv object
+
+```{r}
+enterococcus_consensus_surv_object <- Surv(time = enterococcus_subset_consensus$Overall_Progression_free, 
+                                          event = enterococcus_subset_consensus$Progressed)
+```
+
+### 23.1.2 Fit the Kaplan-Meier survival curve by Winkia status
+
+```{r}
+enterococcus_consensus_fit <- survfit(enterococcus_consensus_surv_object ~ Enterococcus, data = enterococcus_subset_consensus)
+```
+
+### 23.1.3 Plot the survival curve
+
+```{r}
+ggsurvplot(enterococcus_consensus_fit, data = enterococcus_subset_consensus,
+           pval = TRUE, 
+           conf.int = TRUE,
+           legend.title = "Enterococcus Status",
+           legend.labs = c("Absent (0)", "Present (1)"),
+           xlab = "Progression-Free Days",
+           ylab = "Survival Probability",
+           ggtheme = theme_minimal())
+```
+
+## 23.2 All Contaminant Dataframe
+
+```{r}
+enterococcus_subset_allcontaminants <- data.frame(Overall_Progression_free = c(combined_data_allcontaminants$overall_progression_free), 
+                                        Progressed = c(combined_data_allcontaminants$progressed),
+                                        Enterococcus = c(combined_data_allcontaminants$Enterococcus))
+enterococcus_rownames <- c(rownames(combined_data_allcontaminants))
+rownames(enterococcus_subset_allcontaminants) <- enterococcus_rownames
+
+enterococcus_subset_allcontaminants$Progressed <- as.numeric(enterococcus_subset_allcontaminants$Progressed)
+```
+
+1 - No progression 2- Progressed
+### 23.2.1 Create a Surv object
+
+```{r}
+enterococcus_allcontaminants_surv_object <- Surv(time = enterococcus_subset_allcontaminants$Overall_Progression_free, 
+                                          event = enterococcus_subset_allcontaminants$Progressed)
+```
+
+### 23.2.2 Fit the Kaplan-Meier survival curve by Winkia status
+
+```{r}
+enterococcus_allcontaminants_fit <- survfit(enterococcus_allcontaminants_surv_object ~ Enterococcus, data = enterococcus_subset_allcontaminants)
+```
+
+### 23.2.3 Plot the survival curve
+
+```{r}
+ggsurvplot(enterococcus_allcontaminants_fit, data = enterococcus_subset_allcontaminants,
+           pval = TRUE, 
+           conf.int = TRUE,
+           legend.title = "Enterococcus Status",
+           legend.labs = c("Absent (0)", "Present (1)"),
+           xlab = "Progression-Free Days",
+           ylab = "Survival Probability",
+           ggtheme = theme_minimal())
+```
+
+# 24. RELATIVE ABUNDANCE PIPELINE ----
+Relative Abundance Pipeline based on previous work done to produce Wilcoxon Plots
+## 24.1 No contaminant Dataframe
+### 24.1.1 Finding the ideal number of clusters for the cancer samples ----
+Using the dataframes generated in 6.1.1
+``` {r}
+
+class(salter_nocontaminants.rel)
+salter_nocontaminants.rel_matrix <- as.matrix(salter_nocontaminants.rel)
+dist_matrix_genus_nocontaminants <- dist(salter_nocontaminants.rel_matrix, method = "manhattan")
+pcoa_genus_nocontaminants <- pcoa(dist_matrix_genus_nocontaminants, correction = "none", rn = NULL)
+biplot_genus_nocontaminants <- biplot.pcoa(pcoa_genus_nocontaminants, plot.axes = c(1,2), dir.axis1=1, dir.axis2=1, rn = NULL, main = "PCOA Plot for No Contaminant Dataframe")
+biplot_genus_nocontaminants
+
+fviz_nbclust(salter_nocontaminants.rel, kmeans, method='silhouette') 
+fviz_nbclust(salter_nocontaminants.rel, kmeans, method='gap_stat') 
+fviz_nbclust(salter_nocontaminants.rel, kmeans, method='wss') 
+
+#There is no real separation with the no contaminants dataframe so I might just go with 2
+
+#Optimal Number of Clusters - 2 
+```
+
+### 24.1.2 PCOA plot with clusters and co-ordinates
+
+```{r}
+set.seed(198)
+gap_stat <- clusGap(salter_nocontaminants.rel, FUN = kmeans, nstart = 25,
+                    K.max = 10, B = 50)
+print(gap_stat, method = "firstmax")
+
+pcoa_genus_nocontaminants$vectors
+pcoa_coords_nocontaminants <- as.data.frame(pcoa_genus_nocontaminants$vectors)
+head(pcoa_coords_nocontaminants)
+pcoa_coords_final1 <- as.data.frame(pcoa_coords_nocontaminants$Axis.1)
+pcoa_coords_final2 <- as.data.frame(pcoa_coords_nocontaminants$Axis.2)
+pcoa_coords_genus_final <- cbind(pcoa_coords_final1, pcoa_coords_final2)
+
+kmeans_genus <- kmeans(pcoa_coords_genus_final, 2, nstart = 20)
+kmeans_genus
+kmeans_plot <- plot(pcoa_coords_genus_final, col = (kmeans_genus$cluster + 1), main = "K-Means Clustering of Samples - September 2023 and May 2022", xlab = "", ylab = "", pch = 20, cex = 2)
+kmeans_plot
+
+kmeans_clusterdata <- as.data.frame(kmeans_genus$cluster)
+sample_list <- cbind(kmeans_clusterdata, pcoa_coords_genus_final)
+head(sample_list)
+rownames(salter_nocontaminants.rel)
+rownames(sample_list) <- rownames(salter_nocontaminants.rel)
+head(sample_list)
+sample_cluster_list <- cbind(sample_list, hila_samples_metadata_nodeath)
+head(sample_cluster_list)
+write.csv(file = "HILA_Sample_Cluster_List.csv", sample_cluster_list)
+ggplot(sample_cluster_list, aes(x=pcoa_coords_nocontaminants$Axis.1, y=pcoa_coords_nocontaminants$Axis.2, color = progressed)) + geom_point(alpha = 0.5, size = 2) + geom_text(aes(label = rownames(sample_list)))
+
+```
+
+### 24.1.3 Separate samples into their individual clusters and with relative abundances
+
+```{r}
+genus_abundance_clusters <- cbind(sample_list$`kmeans_genus$cluster`, salter_nocontaminants.rel)
+write.csv(file = "Genus_Abundance_Cluster.csv", genus_abundance_clusters)
+genus_abundance_clusters <- read.csv("Genus_Abundance_Cluster.csv", row.names = 1)
+
+sample_cluster_coords <- as.data.frame(sample_cluster_list)[, 2:3] 
+sample_cluster_coords_genus_abundance <- cbind(sample_cluster_coords, genus_abundance_clusters) 
+
+genus_cluster1 <- sample_cluster_coords_genus_abundance %>% filter(sample_cluster_coords_genus_abundance$sample_list..kmeans_genus.cluster. == 1)
+genus_cluster2 <- sample_cluster_coords_genus_abundance %>% filter(sample_cluster_coords_genus_abundance$sample_list..kmeans_genus.cluster. == 2)
+```
+
+### 24.1.4 Create a scatterplot for Cluster 1 and 2 with labels
+
+```{r}
+ggplot(genus_cluster1, aes(x = genus_cluster1$`pcoa_coords_nocontaminants$Axis.1`, y = genus_cluster1$`pcoa_coords_nocontaminants$Axis.2`, label = rownames(genus_cluster1))) +
+  geom_point() +
+  geom_text(aes(label = rownames(genus_cluster1)), vjust = -0.5, size =3) +
+  labs(title = "Cluster 1")
+
+ggplot(genus_cluster2, aes(x = genus_cluster2$`pcoa_coords_nocontaminants$Axis.1`, y = genus_cluster2$`pcoa_coords_nocontaminants$Axis.2`, label = rownames(genus_cluster2))) +
+  geom_point() +
+  geom_text(aes(label = rownames(genus_cluster2)), vjust = -0.5, size =3) +
+  labs(title = "Cluster 2")
+
+```
+
+### 24.1.4 Boxplots for the two clusters
+
+```{r}
+sample_cluster_coords_genus_abundance <- sample_cluster_coords_genus_abundance %>%
+  rename(Cluster = sample_list..kmeans_genus.cluster.)
+sample_cluster_coords_genus_abundance <- sample_cluster_coords_genus_abundance %>%
+  rename(Axis1 = `pcoa_coords_nocontaminants$Axis.1`)
+sample_cluster_coords_genus_abundance <- sample_cluster_coords_genus_abundance %>%
+  rename(Axis2 = `pcoa_coords_nocontaminants$Axis.2`)
+  
+sample_cluster_coords_genus_abundance$Cluster <- as.factor(sample_cluster_coords_genus_abundance$Cluster)
+
+wilc_results <- list()
+bacteria_plots <- list()
+pdf('KWPlots_Nocontaminants.pdf')
+
+# Perform the tests and generate plots
+for(i in 4:ncol(sample_cluster_coords_genus_abundance)) {
+    print(i)
+
+    # Extract data for all clusters
+    data_cluster1 <- as.numeric(genus_cluster1[, i])
+    data_cluster2 <- as.numeric(genus_cluster2[, i])
+
+    # Combine data for Kruskal-Wallis test
+    all_data <- c(data_cluster1, data_cluster2)
+    group_labels <- c(rep("Cluster1", length(data_cluster1)), 
+                      rep("Cluster2", length(data_cluster2)))
+
+    # Skip if any group has no variation or insufficient data
+    if (length(unique(all_data[!is.na(all_data)])) <= 1) {
+        warning(paste("Skipping column", i, "- insufficient data or no variation."))
+        next
+    }
+
+    # Perform Kruskal-Wallis test
+    kruskal_result <- tryCatch(kruskal.test(all_data ~ group_labels), 
+                               error = function(e) NA)
+
+    # Check if Kruskal-Wallis test returned valid results
+    if (is.na(kruskal_result$p.value)) {
+        warning(paste("Skipping column", i, "- Kruskal-Wallis test failed."))
+        next
+    }
+
+    wilc_results[[paste0("kruskal_", i)]] <- kruskal_result$p.value
+
+    # Post-hoc pairwise Wilcoxon test if Kruskal-Wallis is significant
+    if (kruskal_result$p.value < 0.05) {
+        pairwise_results <- pairwise.wilcox.test(all_data, group_labels, 
+                                                 p.adjust.method = "BH", exact = FALSE)
+        wilc_results[[paste0("pairwise_", i)]] <- pairwise_results$p.value
+        
+        # Calculate medians for plotting
+        clus1_median <- median(data_cluster1, na.rm = TRUE)
+        clus2_median <- median(data_cluster2, na.rm = TRUE)
+
+        # Generate boxplot with statistical annotations only if significant
+        bacteria_plots[[i]] <- ggplot(sample_cluster_coords_genus_abundance, aes(y = sample_cluster_coords_genus_abundance[, i], x = Cluster)) +
+            geom_point(alpha = 0.6) +
+            geom_boxplot(alpha = 0.7, outlier.alpha = 0) +
+            theme_minimal() +
+            scale_y_sqrt() +
+            labs(y = paste0(colnames(sample_cluster_coords_genus_abundance)[i])) +
+            stat_compare_means(method = "kruskal.test", label.y = max(all_data, na.rm = TRUE) * 1.1)
+
+        print(bacteria_plots[[i]])
+    }
+}
+
+dev.off()
+
+```
+
+### 24.1.5 Combined Dataframe with Abundance data and cluster data (Work with HILA samples from here)
+```{r}
+combined_data_nocontaminants.rel <- merge(hila_samples_metadata_nodeath_nocontaminants, 
+                                      salter_nocontaminants.rel, by = "row.names")
+
+rownames(combined_data_nocontaminants.rel) <- combined_data_nocontaminants.rel$Row.names
+combined_data_nocontaminants.rel$Row.names <- NULL
+
+```
+
+### 24.1.6 Encode Progression as a factor
+```{r}
+combined_data_nocontaminants.rel$progressed <- as.factor(combined_data_nocontaminants.rel$progressed)
+```
+
+### 24.1.7 Create a Survival Object
+
+```{r}
+survival_obj_abbs_nocontaminants.rel <- Surv(combined_data_nocontaminants.rel$overall_progression_free,
+                                         combined_data_nocontaminants.rel$progressed)
+```
+
+### 24.1.8 Run Boruta on the Survival Object
+
+```{r}
+boruta_nocontaminant_survfit.rel <- Boruta(salter_nocontaminants.rel, survival_obj_abbs_nocontaminants.rel, pValue = 0.05, maxRuns = 10000, doTrace = 2)
+
+boruta_nocontaminants_finaldecision.rel <- as.data.frame(boruta_nocontaminant_survfit.rel$finalDecision)
+
+write.csv(file = "Boruta_RelAb_Nocontaminants_FinalDecision.csv", boruta_nocontaminants_finaldecision.rel)
+```
+
+## 24.2 Consensus Dataframe
+### 24.2.1 Finding the ideal number of clusters for the cancer samples ----
+Using the dataframes generated in 6.1.1
+``` {r}
+
+class(salter_consensus.rel)
+salter_consensus.rel_matrix <- as.matrix(salter_consensus.rel)
+dist_matrix_genus_consensus <- dist(salter_consensus.rel_matrix, method = "manhattan")
+pcoa_genus_consensus <- pcoa(dist_matrix_genus_consensus, correction = "none", rn = NULL)
+biplot_genus_consensus <- biplot.pcoa(pcoa_genus_consensus, plot.axes = c(1,2), dir.axis1=1, dir.axis2=1, rn = NULL, main = "PCOA Plot for No Contaminant Dataframe")
+biplot_genus_consensus
+
+fviz_nbclust(salter_consensus.rel, kmeans, method='silhouette') 
+fviz_nbclust(salter_consensus.rel, kmeans, method='gap_stat') 
+fviz_nbclust(salter_consensus.rel, kmeans, method='wss') 
+
+#There is no real separation with the no contaminants dataframe so I might just go with 2
+# Upon visualising I realised 3 might be a better number
+
+#Optimal Number of Clusters - 3 
+```
+
+### 24.2.2 PCOA plot with clusters and co-ordinates
+
+```{r}
+set.seed(198)
+gap_stat <- clusGap(salter_consensus.rel, FUN = kmeans, nstart = 25,
+                    K.max = 10, B = 50)
+print(gap_stat, method = "firstmax")
+
+pcoa_genus_consensus$vectors
+pcoa_coords_consensus <- as.data.frame(pcoa_genus_consensus$vectors)
+head(pcoa_coords_consensus)
+pcoa_coords_final1 <- as.data.frame(pcoa_coords_consensus$Axis.1)
+pcoa_coords_final2 <- as.data.frame(pcoa_coords_consensus$Axis.2)
+pcoa_coords_genus_final <- cbind(pcoa_coords_final1, pcoa_coords_final2)
+
+kmeans_genus <- kmeans(pcoa_coords_genus_final, 3, nstart = 20)
+kmeans_genus
+kmeans_plot <- plot(pcoa_coords_genus_final, col = (kmeans_genus$cluster + 1), main = "K-Means Clustering of Samples - Consensus Dataframe", xlab = "", ylab = "", pch = 20, cex = 2)
+kmeans_plot
+
+kmeans_clusterdata <- as.data.frame(kmeans_genus$cluster)
+sample_list <- cbind(kmeans_clusterdata, pcoa_coords_genus_final)
+head(sample_list)
+rownames(salter_consensus.rel)
+rownames(sample_list) <- rownames(salter_consensus.rel)
+head(sample_list)
+sample_cluster_list <- cbind(sample_list, hila_samples_metadata_nodeath)
+head(sample_cluster_list)
+write.csv(file = "HILA_Sample_Cluster_List_Consensus.csv", sample_cluster_list)
+ggplot(sample_cluster_list, aes(x=pcoa_coords_consensus$Axis.1, y=pcoa_coords_consensus$Axis.2, color = progressed)) + geom_point(alpha = 0.5, size = 2) + geom_text(aes(label = rownames(sample_list)))
+
+```
+
+### 24.2.3 Separate samples into their individual clusters and with relative abundances
+
+```{r}
+genus_abundance_clusters <- cbind(sample_list$`kmeans_genus$cluster`, salter_consensus.rel)
+write.csv(file = "Genus_Abundance_Cluster.csv", genus_abundance_clusters)
+genus_abundance_clusters <- read.csv("Genus_Abundance_Cluster.csv", row.names = 1)
+
+sample_cluster_coords <- as.data.frame(sample_cluster_list)[, 2:3] 
+sample_cluster_coords_genus_abundance <- cbind(sample_cluster_coords, genus_abundance_clusters) 
+
+genus_cluster1 <- sample_cluster_coords_genus_abundance %>% filter(sample_cluster_coords_genus_abundance$sample_list..kmeans_genus.cluster. == 1)
+genus_cluster2 <- sample_cluster_coords_genus_abundance %>% filter(sample_cluster_coords_genus_abundance$sample_list..kmeans_genus.cluster. == 2)
+genus_cluster3 <- sample_cluster_coords_genus_abundance %>% filter(sample_cluster_coords_genus_abundance$sample_list..kmeans_genus.cluster. == 3)
+```
+
+### 24.2.4 Create a scatterplot for Cluster 1, 2 and 3 with labels
+
+```{r}
+ggplot(genus_cluster1, aes(x = genus_cluster1$`pcoa_coords_consensus$Axis.1`, y = genus_cluster1$`pcoa_coords_consensus$Axis.2`, label = rownames(genus_cluster1))) +
+  geom_point() +
+  geom_text(aes(label = rownames(genus_cluster1)), vjust = -0.5, size =3) +
+  labs(title = "Cluster with UTI samples (Cluster 1)")
+
+ggplot(genus_cluster2, aes(x = genus_cluster2$`pcoa_coords_consensus$Axis.1`, y = genus_cluster2$`pcoa_coords_consensus$Axis.2`, label = rownames(genus_cluster2))) +
+  geom_point() +
+  geom_text(aes(label = rownames(genus_cluster2)), vjust = -0.5, size =3) +
+  labs(title = "Cluster with UTI samples (Cluster 2)")
+
+ggplot(genus_cluster3, aes(x = genus_cluster3$`pcoa_coords_consensus$Axis.1`, y = genus_cluster3$`pcoa_coords_consensus$Axis.2`, label = rownames(genus_cluster3))) +
+  geom_point() +
+  geom_text(aes(label = rownames(genus_cluster3)), vjust = -0.5, size =3) +
+  labs(title = "Cluster with UTI samples (Cluster 3)")
+
+```
+
+### 24.2.5 Boxplots for the three clusters
+
+```{r}
+sample_cluster_coords_genus_abundance <- sample_cluster_coords_genus_abundance %>%
+  rename(Cluster = sample_list..kmeans_genus.cluster.)
+sample_cluster_coords_genus_abundance <- sample_cluster_coords_genus_abundance %>%
+  rename(Axis1 = `pcoa_coords_consensus$Axis.1`)
+sample_cluster_coords_genus_abundance <- sample_cluster_coords_genus_abundance %>%
+  rename(Axis2 = `pcoa_coords_consensus$Axis.2`)
+  
+sample_cluster_coords_genus_abundance$Cluster <- as.factor(sample_cluster_coords_genus_abundance$Cluster)
+
+wilc_results <- list()
+bacteria_plots <- list()
+pdf('KWPlots_Consensus.pdf')
+
+# Perform the tests and generate plots
+for(i in 4:ncol(sample_cluster_coords_genus_abundance)) {
+    print(i)
+
+    # Extract data for all clusters
+    data_cluster1 <- as.numeric(genus_cluster1[, i])
+    data_cluster2 <- as.numeric(genus_cluster2[, i])
+    data_cluster3 <- as.numeric(genus_cluster3[, i])
+
+    # Combine data for Kruskal-Wallis test
+    all_data <- c(data_cluster1, data_cluster2, data_cluster3)
+    group_labels <- c(rep("Cluster1", length(data_cluster1)), 
+                      rep("Cluster2", length(data_cluster2)), 
+                      rep("Cluster3", length(data_cluster3)))
+
+    # Skip if any group has no variation or insufficient data
+    if (length(unique(all_data[!is.na(all_data)])) <= 1) {
+        warning(paste("Skipping column", i, "- insufficient data or no variation."))
+        next
+    }
+
+    # Perform Kruskal-Wallis test
+    kruskal_result <- tryCatch(kruskal.test(all_data ~ group_labels), 
+                               error = function(e) NA)
+
+    # Check if Kruskal-Wallis test returned valid results
+    if (is.na(kruskal_result$p.value)) {
+        warning(paste("Skipping column", i, "- Kruskal-Wallis test failed."))
+        next
+    }
+
+    wilc_results[[paste0("kruskal_", i)]] <- kruskal_result$p.value
+
+    # Post-hoc pairwise Wilcoxon test if Kruskal-Wallis is significant
+    if (kruskal_result$p.value < 0.05) {
+        pairwise_results <- pairwise.wilcox.test(all_data, group_labels, 
+                                                 p.adjust.method = "BH", exact = FALSE)
+        wilc_results[[paste0("pairwise_", i)]] <- pairwise_results$p.value
+        
+        # Calculate medians for plotting
+        clus1_median <- median(data_cluster1, na.rm = TRUE)
+        clus2_median <- median(data_cluster2, na.rm = TRUE)
+        clus3_median <- median(data_cluster3, na.rm = TRUE)
+
+        # Generate boxplot with statistical annotations only if significant
+        bacteria_plots[[i]] <- ggplot(sample_cluster_coords_genus_abundance, aes(y = sample_cluster_coords_genus_abundance[, i], x = Cluster)) +
+            geom_point(alpha = 0.6) +
+            geom_boxplot(alpha = 0.7, outlier.alpha = 0) +
+            theme_minimal() +
+            scale_y_sqrt() +
+            labs(y = paste0(colnames(sample_cluster_coords_genus_abundance)[i])) +
+            stat_compare_means(method = "kruskal.test", label.y = max(all_data, na.rm = TRUE) * 1.1)
+
+        print(bacteria_plots[[i]])
+    }
+}
+
+dev.off()
+
+```
+
+### 24.2.6 Combined Dataframe with Abundance data and cluster data
+```{r}
+combined_data_consensus.rel <- merge(hila_samples_metadata_nodeath_consensus, 
+                                      salter_consensus.rel, by = "row.names")
+
+rownames(combined_data_consensus.rel) <- combined_data_consensus.rel$Row.names
+combined_data_consensus.rel$Row.names <- NULL
+
+```
+
+### 24.2.7 Encode Progression as a factor
+```{r}
+combined_data_consensus.rel$progressed <- as.factor(combined_data_consensus.rel$progressed)
+```
+
+### 24.2.8 Create a Survival Object
+
+```{r}
+survival_obj_abbs_consensus.rel <- Surv(combined_data_consensus.rel$overall_progression_free,
+                                         combined_data_consensus.rel$progressed)
+```
+
+### 24.2.9 Run Boruta on the Survival Object
+
+```{r}
+boruta_consensus_survfit.rel <- Boruta(salter_consensus.rel, survival_obj_abbs_consensus.rel, pValue = 0.05, maxRuns = 10000, doTrace = 2)
+
+boruta_consensus_finaldecision.rel <- as.data.frame(boruta_consensus_survfit.rel$finalDecision)
+
+write.csv(file = "Boruta_RelAb_Consensus_FinalDecision.csv", boruta_consensus_finaldecision.rel)
+```
+
+
+## 24.3 All Contaminant Dataframe
+### 24.3.1 Finding the ideal number of clusters for the cancer samples ----
+Using the dataframes generated in 6.1.1
+``` {r}
+class(salter_allcontaminants.rel)
+salter_allcontaminants.rel_matrix <- as.matrix(salter_allcontaminants.rel)
+dist_matrix_genus_allcontaminants <- dist(salter_allcontaminants.rel_matrix, method = "manhattan")
+pcoa_genus_allcontaminants <- pcoa(dist_matrix_genus_allcontaminants, correction = "none", rn = NULL)
+biplot_genus_allcontaminants <- biplot.pcoa(pcoa_genus_allcontaminants, plot.axes = c(1,2), dir.axis1=1, dir.axis2=1, rn = NULL, main = "PCOA Plot for No Contaminant Dataframe")
+biplot_genus_allcontaminants
+
+fviz_nbclust(salter_allcontaminants.rel, kmeans, method='silhouette') 
+fviz_nbclust(salter_allcontaminants.rel, kmeans, method='gap_stat') 
+fviz_nbclust(salter_allcontaminants.rel, kmeans, method='wss') 
+
+#There is no real separation with the no contaminants dataframe so I might just go with 2
+# Upon visualising I realised 3 might be a better number
+
+#Optimal Number of Clusters - 3 
+```
+
+
+### 24.3.2 PCOA plot with clusters and co-ordinates
+
+```{r}
+set.seed(198)
+gap_stat <- clusGap(salter_allcontaminants.rel, FUN = kmeans, nstart = 25,
+                    K.max = 10, B = 50)
+print(gap_stat, method = "firstmax")
+
+pcoa_genus_allcontaminants$vectors
+pcoa_coords_allcontaminants <- as.data.frame(pcoa_genus_allcontaminants$vectors)
+head(pcoa_coords_allcontaminants)
+pcoa_coords_final1 <- as.data.frame(pcoa_coords_allcontaminants$Axis.1)
+pcoa_coords_final2 <- as.data.frame(pcoa_coords_allcontaminants$Axis.2)
+pcoa_coords_genus_final <- cbind(pcoa_coords_final1, pcoa_coords_final2)
+
+kmeans_genus <- kmeans(pcoa_coords_genus_final, 3, nstart = 20)
+kmeans_genus
+kmeans_plot <- plot(pcoa_coords_genus_final, col = (kmeans_genus$cluster + 1), main = "K-Means Clustering of Samples - All Contaminants Dataframe", xlab = "", ylab = "", pch = 20, cex = 2)
+kmeans_plot
+
+kmeans_clusterdata <- as.data.frame(kmeans_genus$cluster)
+sample_list <- cbind(kmeans_clusterdata, pcoa_coords_genus_final)
+head(sample_list)
+rownames(salter_allcontaminants.rel)
+rownames(sample_list) <- rownames(salter_allcontaminants.rel)
+head(sample_list)
+sample_cluster_list <- cbind(sample_list, hila_samples_metadata_nodeath)
+head(sample_cluster_list)
+write.csv(file = "HILA_Sample_Cluster_List_AllContaminants.csv", sample_cluster_list)
+ggplot(sample_cluster_list, aes(x=pcoa_coords_allcontaminants$Axis.1, y=pcoa_coords_allcontaminants$Axis.2, color = progressed)) + geom_point(alpha = 0.5, size = 2) + geom_text(aes(label = rownames(sample_list)))
+
+```
+
+
+### 24.3.3 Separate samples into their individual clusters and with relative abundances
+
+```{r}
+genus_abundance_clusters <- cbind(sample_list$`kmeans_genus$cluster`, salter_allcontaminants.rel)
+write.csv(file = "Genus_Abundance_Cluster.csv", genus_abundance_clusters)
+genus_abundance_clusters <- read.csv("Genus_Abundance_Cluster.csv", row.names = 1)
+
+sample_cluster_coords <- as.data.frame(sample_cluster_list)[, 2:3] 
+sample_cluster_coords_genus_abundance <- cbind(sample_cluster_coords, genus_abundance_clusters) 
+
+genus_cluster1 <- sample_cluster_coords_genus_abundance %>% filter(sample_cluster_coords_genus_abundance$sample_list..kmeans_genus.cluster. == 1)
+genus_cluster2 <- sample_cluster_coords_genus_abundance %>% filter(sample_cluster_coords_genus_abundance$sample_list..kmeans_genus.cluster. == 2)
+genus_cluster3 <- sample_cluster_coords_genus_abundance %>% filter(sample_cluster_coords_genus_abundance$sample_list..kmeans_genus.cluster. == 3)
+```
+
+### 24.3.4 Create a scatterplot for Cluster 1, 2 and 3 with labels
+
+```{r}
+ggplot(genus_cluster1, aes(x = genus_cluster1$`pcoa_coords_allcontaminants$Axis.1`, y = genus_cluster1$`pcoa_coords_allcontaminants$Axis.2`, label = rownames(genus_cluster1))) +
+  geom_point() +
+  geom_text(aes(label = rownames(genus_cluster1)), vjust = -0.5, size =3) +
+  labs(title = "Cluster with UTI samples (Cluster 1)")
+
+ggplot(genus_cluster2, aes(x = genus_cluster2$`pcoa_coords_allcontaminants$Axis.1`, y = genus_cluster2$`pcoa_coords_allcontaminants$Axis.2`, label = rownames(genus_cluster2))) +
+  geom_point() +
+  geom_text(aes(label = rownames(genus_cluster2)), vjust = -0.5, size =3) +
+  labs(title = "Cluster with UTI samples (Cluster 2)")
+
+ggplot(genus_cluster3, aes(x = genus_cluster3$`pcoa_coords_allcontaminants$Axis.1`, y = genus_cluster3$`pcoa_coords_allcontaminants$Axis.2`, label = rownames(genus_cluster3))) +
+  geom_point() +
+  geom_text(aes(label = rownames(genus_cluster3)), vjust = -0.5, size =3) +
+  labs(title = "Cluster with UTI samples (Cluster 3)")
+
+```
+
+
+### 24.3.5 Boxplots for the three clusters
+
+```{r}
+sample_cluster_coords_genus_abundance <- sample_cluster_coords_genus_abundance %>%
+  rename(Cluster = sample_list..kmeans_genus.cluster.)
+sample_cluster_coords_genus_abundance <- sample_cluster_coords_genus_abundance %>%
+  rename(Axis1 = `pcoa_coords_allcontaminants$Axis.1`)
+sample_cluster_coords_genus_abundance <- sample_cluster_coords_genus_abundance %>%
+  rename(Axis2 = `pcoa_coords_allcontaminants$Axis.2`)
+  
+sample_cluster_coords_genus_abundance$Cluster <- as.factor(sample_cluster_coords_genus_abundance$Cluster)
+
+wilc_results <- list()
+bacteria_plots <- list()
+pdf('KWPlots_AllContaminants.pdf')
+
+# Perform the tests and generate plots
+for(i in 4:ncol(sample_cluster_coords_genus_abundance)) {
+    print(i)
+
+    # Extract data for all clusters
+    data_cluster1 <- as.numeric(genus_cluster1[, i])
+    data_cluster2 <- as.numeric(genus_cluster2[, i])
+    data_cluster3 <- as.numeric(genus_cluster3[, i])
+
+    # Combine data for Kruskal-Wallis test
+    all_data <- c(data_cluster1, data_cluster2, data_cluster3)
+    group_labels <- c(rep("Cluster1", length(data_cluster1)), 
+                      rep("Cluster2", length(data_cluster2)), 
+                      rep("Cluster3", length(data_cluster3)))
+
+    # Skip if any group has no variation or insufficient data
+    if (length(unique(all_data[!is.na(all_data)])) <= 1) {
+        warning(paste("Skipping column", i, "- insufficient data or no variation."))
+        next
+    }
+
+    # Perform Kruskal-Wallis test
+    kruskal_result <- tryCatch(kruskal.test(all_data ~ group_labels), 
+                               error = function(e) NA)
+
+    # Check if Kruskal-Wallis test returned valid results
+    if (is.na(kruskal_result$p.value)) {
+        warning(paste("Skipping column", i, "- Kruskal-Wallis test failed."))
+        next
+    }
+
+    wilc_results[[paste0("kruskal_", i)]] <- kruskal_result$p.value
+
+    # Post-hoc pairwise Wilcoxon test if Kruskal-Wallis is significant
+    if (kruskal_result$p.value < 0.05) {
+        pairwise_results <- pairwise.wilcox.test(all_data, group_labels, 
+                                                 p.adjust.method = "BH", exact = FALSE)
+        wilc_results[[paste0("pairwise_", i)]] <- pairwise_results$p.value
+        
+        # Calculate medians for plotting
+        clus1_median <- median(data_cluster1, na.rm = TRUE)
+        clus2_median <- median(data_cluster2, na.rm = TRUE)
+        clus3_median <- median(data_cluster3, na.rm = TRUE)
+
+        # Generate boxplot with statistical annotations only if significant
+        bacteria_plots[[i]] <- ggplot(sample_cluster_coords_genus_abundance, aes(y = sample_cluster_coords_genus_abundance[, i], x = Cluster)) +
+            geom_point(alpha = 0.6) +
+            geom_boxplot(alpha = 0.7, outlier.alpha = 0) +
+            theme_minimal() +
+            scale_y_sqrt() +
+            labs(y = paste0(colnames(sample_cluster_coords_genus_abundance)[i])) +
+            stat_compare_means(method = "kruskal.test", label.y = max(all_data, na.rm = TRUE) * 1.1)
+
+        print(bacteria_plots[[i]])
+    }
+}
+
+dev.off()
+
+```
+
+### 24.3.6 Combined Dataframe with Abundance data and cluster data
+```{r}
+combined_data_allcontaminants.rel <- merge(hila_samples_metadata_nodeath_allcontaminants, 
+                                      salter_allcontaminants.rel, by = "row.names")
+
+rownames(combined_data_allcontaminants.rel) <- combined_data_allcontaminants.rel$Row.names
+combined_data_allcontaminants.rel$Row.names <- NULL
+
+```
+
+### 24.3.7 Encode Progression as a factor
+```{r}
+combined_data_allcontaminants.rel$progressed <- as.factor(combined_data_allcontaminants.rel$progressed)
+```
+
+### 24.3.8 Create a Survival Object
+
+```{r}
+survival_obj_abbs_allcontaminants.rel <- Surv(combined_data_allcontaminants.rel$overall_progression_free,
+                                         combined_data_allcontaminants.rel$progressed)
+```
+
+### 24.3.9 Run Boruta on the Survival Object
+
+```{r}
+boruta_allcontaminants_survfit.rel <- Boruta(salter_allcontaminants.rel, survival_obj_abbs_allcontaminants.rel, pValue = 0.05, maxRuns = 10000, doTrace = 2)
+
+boruta_allcontaminants_finaldecision.rel <- as.data.frame(boruta_allcontaminants_survfit.rel$finalDecision)
+
+write.csv(file = "Boruta_RelAb_AllContaminants_FinalDecision.csv", boruta_allcontaminants_finaldecision.rel)
+```
+Acinetobacter has been confirmed in both consensus and all contaminant dataframes. All contaminant also confirms Enterococcus and is tentative on Peptoniphilus_E.
+Interestingly, Enterococcus was also tentative on the presence-absence in the all contaminant dataframe so maybe there is something there?
+
+
+# 25. Generation of KM Curves for Each Dataframe
+
+## 25.1 No Contaminant Dataframe
+
+The organisms found significant here were Enterococcus and Peptoniphilus_E
+
+### 25.2.1 Enterococcus
+
+```{r}
+enterococcus_subset_nocontaminants.rel <- data.frame(Overall_Progression_free = c(combined_data_nocontaminants.rel$overall_progression_free), 
+                                              Progressed = c(combined_data_nocontaminants.rel$progressed),
+                                              Enterococcus = c(combined_data_nocontaminants$Enterococcus))
+enterococcus_rownames <- c(rownames(combined_data_nocontaminants.rel))
+rownames(enterococcus_subset_nocontaminants.rel) <- enterococcus_rownames
+
+enterococcus_subset_nocontaminants.rel$Progressed <- as.numeric(enterococcus_subset_nocontaminants.rel$Progressed)
+```
+
+1 - No progression 2- Progressed
+#### 25.2.1.1 Create a Surv object
+
+```{r}
+enterococcus_nocontaminants_surv_object.rel <- Surv(time = enterococcus_subset_nocontaminants.rel$Overall_Progression_free, 
+                                          event = enterococcus_subset_nocontaminants.rel$Progressed)
+```
+
+#### 25.2.1.2 Fit the Kaplan-Meier survival curve by Winkia status
+
+```{r}
+enterococcus_nocontaminants_fit.rel <- survfit(enterococcus_nocontaminants_surv_object.rel ~ Enterococcus, data = enterococcus_subset_nocontaminants.rel)
+```
+
+#### 25.2.1.3 Plot the survival curve
+
+```{r}
+ggsurvplot(enterococcus_nocontaminants_fit.rel, data = enterococcus_subset_nocontaminants.rel, 
+           pval = TRUE, 
+           conf.int = TRUE,
+           legend.title = "Enterococcus Status",
+           legend.labs = c("Absent (0)", "Present (1)"),
+           xlab = "Progression-Free Days",
+           ylab = "Survival Probability",
+           ggtheme = theme_minimal())
+```
+
+### 25.2.1 Peptoniphilus_E
+
+```{r}
+peptoniphilus_e_subset_nocontaminants.rel <- data.frame(Overall_Progression_free = c(combined_data_nocontaminants.rel$overall_progression_free), 
+                                              Progressed = c(combined_data_nocontaminants.rel$progressed),
+                                              Peptoniphilus_E = c(combined_data_nocontaminants$Peptoniphilus_E))
+peptoniphilus_e_rownames <- c(rownames(combined_data_nocontaminants.rel))
+rownames(peptoniphilus_e_subset_nocontaminants.rel) <- peptoniphilus_e_rownames
+
+peptoniphilus_e_subset_nocontaminants.rel$Progressed <- as.numeric(peptoniphilus_e_subset_nocontaminants.rel$Progressed)
+```
+
+1 - No progression 2- Progressed
+#### 25.2.1.1 Create a Surv object
+
+```{r}
+peptoniphilus_e_nocontaminants_surv_object.rel <- Surv(time = peptoniphilus_e_subset_nocontaminants.rel$Overall_Progression_free, 
+                                          event = peptoniphilus_e_subset_nocontaminants.rel$Progressed)
+```
+
+#### 25.2.1.2 Fit the Kaplan-Meier survival curve by Winkia status
+
+```{r}
+peptoniphilus_e_nocontaminants_fit.rel <- survfit(peptoniphilus_e_nocontaminants_surv_object.rel ~ Peptoniphilus_E, data = peptoniphilus_e_subset_nocontaminants.rel)
+```
+
+#### 25.2.1.3 Plot the survival curve
+
+```{r}
+ggsurvplot(peptoniphilus_e_nocontaminants_fit.rel, data = peptoniphilus_e_subset_nocontaminants.rel, 
+           pval = TRUE, 
+           conf.int = TRUE,
+           legend.title = "Peptoniphilus_E Status",
+           legend.labs = c("Absent (0)", "Present (1)"),
+           xlab = "Progression-Free Days",
+           ylab = "Survival Probability",
+           ggtheme = theme_minimal())
+```
+
+## 25.2 Consensus Dataframe
+
+The organisms found significant here was Acinetobacter
+
+### 25.2.1 Acinetobacter
+
+```{r}
+acinetobacter_subset_consensus.rel <- data.frame(Overall_Progression_free = c(combined_data_consensus.rel$overall_progression_free), 
+                                              Progressed = c(combined_data_consensus.rel$progressed),
+                                              Acinetobacter = c(combined_data_consensus$Acinetobacter))
+acinetobacter_rownames <- c(rownames(combined_data_consensus.rel))
+rownames(acinetobacter_subset_consensus.rel) <- acinetobacter_rownames
+
+acinetobacter_subset_consensus.rel$Progressed <- as.numeric(acinetobacter_subset_consensus.rel$Progressed)
+```
+
+1 - No progression 2- Progressed
+#### 25.2.1.1 Create a Surv object
+
+```{r}
+acinetobacter_consensus_surv_object.rel <- Surv(time = acinetobacter_subset_consensus.rel$Overall_Progression_free, 
+                                          event = acinetobacter_subset_consensus.rel$Progressed)
+```
+
+#### 25.2.1.2 Fit the Kaplan-Meier survival curve by Winkia status
+
+```{r}
+acinetobacter_consensus_fit.rel <- survfit(acinetobacter_consensus_surv_object.rel ~ Acinetobacter, data = acinetobacter_subset_consensus.rel)
+```
+
+#### 25.2.1.3 Plot the survival curve
+
+```{r}
+ggsurvplot(acinetobacter_consensus_fit.rel, data = acinetobacter_subset_consensus.rel, 
+           pval = TRUE, 
+           conf.int = TRUE,
+           legend.title = "Acinetobacter Status",
+           legend.labs = c("Absent (0)", "Present (1)"),
+           xlab = "Progression-Free Days",
+           ylab = "Survival Probability",
+           ggtheme = theme_minimal())
+```
+
+## 25.3 All Contaminant Dataframe
+
+The organisms found significant here were Enterococcus and Acinetobacter with Peptoniphilus_E being tentative
+
+### 25.3.1 Enterococcus
+
+```{r}
+enterococcus_subset_allcontaminants.rel <- data.frame(Overall_Progression_free = c(combined_data_allcontaminants.rel$overall_progression_free), 
+                                              Progressed = c(combined_data_allcontaminants.rel$progressed),
+                                              Enterococcus = c(combined_data_allcontaminants$Enterococcus))
+enterococcus_rownames <- c(rownames(combined_data_allcontaminants.rel))
+rownames(enterococcus_subset_allcontaminants.rel) <- enterococcus_rownames
+
+enterococcus_subset_allcontaminants.rel$Progressed <- as.numeric(enterococcus_subset_allcontaminants.rel$Progressed)
+```
+
+1 - No progression 2- Progressed
+#### 25.3.1.1 Create a Surv object
+
+```{r}
+enterococcus_allcontaminants_surv_object.rel <- Surv(time = enterococcus_subset_allcontaminants.rel$Overall_Progression_free, 
+                                          event = enterococcus_subset_allcontaminants.rel$Progressed)
+```
+
+#### 25.3.1.2 Fit the Kaplan-Meier survival curve by Winkia status
+
+```{r}
+enterococcus_allcontaminants_fit.rel <- survfit(enterococcus_allcontaminants_surv_object.rel ~ Enterococcus, data = enterococcus_subset_allcontaminants.rel)
+```
+
+#### 25.3.1.3 Plot the survival curve
+
+```{r}
+ggsurvplot(enterococcus_allcontaminants_fit.rel, data = enterococcus_subset_allcontaminants.rel, 
+           pval = TRUE, 
+           conf.int = TRUE,
+           legend.title = "Enterococcus Status",
+           legend.labs = c("Absent (0)", "Present (1)"),
+           xlab = "Progression-Free Days",
+           ylab = "Survival Probability",
+           ggtheme = theme_minimal())
+```
+
+### 25.3.2 Acinetobacter
+
+```{r}
+acinetobacter_subset_allcontaminants.rel <- data.frame(Overall_Progression_free = c(combined_data_allcontaminants.rel$overall_progression_free), 
+                                              Progressed = c(combined_data_allcontaminants.rel$progressed),
+                                              Acinetobacter = c(combined_data_allcontaminants$Acinetobacter))
+acinetobacter_rownames <- c(rownames(combined_data_allcontaminants.rel))
+rownames(acinetobacter_subset_allcontaminants.rel) <- acinetobacter_rownames
+
+acinetobacter_subset_allcontaminants.rel$Progressed <- as.numeric(acinetobacter_subset_allcontaminants.rel$Progressed)
+```
+
+1 - No progression 2- Progressed
+#### 25.3.2.1 Create a Surv object
+
+```{r}
+acinetobacter_allcontaminants_surv_object.rel <- Surv(time = acinetobacter_subset_allcontaminants.rel$Overall_Progression_free, 
+                                          event = acinetobacter_subset_allcontaminants.rel$Progressed)
+```
+
+#### 25.3.2.2 Fit the Kaplan-Meier survival curve by Winkia status
+
+```{r}
+acinetobacter_allcontaminants_fit.rel <- survfit(acinetobacter_allcontaminants_surv_object.rel ~ Acinetobacter, data = acinetobacter_subset_allcontaminants.rel)
+```
+
+#### 25.3.2.3 Plot the survival curve
+
+```{r}
+ggsurvplot(acinetobacter_allcontaminants_fit.rel, data = acinetobacter_subset_allcontaminants.rel, 
+           pval = TRUE, 
+           conf.int = TRUE,
+           legend.title = "Acinetobacter Status",
+           legend.labs = c("Absent (0)", "Present (1)"),
+           xlab = "Progression-Free Days",
+           ylab = "Survival Probability",
+           ggtheme = theme_minimal())
+```
+
+### 25.3.3 Peptoniphilus_E
+
+```{r}
+peptoniphilus_e_subset_allcontaminants.rel <- data.frame(Overall_Progression_free = c(combined_data_allcontaminants.rel$overall_progression_free), 
+                                              Progressed = c(combined_data_allcontaminants.rel$progressed),
+                                              Peptoniphilus_E = c(combined_data_allcontaminants$Peptoniphilus_E))
+peptoniphilus_e_rownames <- c(rownames(combined_data_allcontaminants.rel))
+rownames(peptoniphilus_e_subset_allcontaminants.rel) <- peptoniphilus_e_rownames
+
+peptoniphilus_e_subset_allcontaminants.rel$Progressed <- as.numeric(peptoniphilus_e_subset_allcontaminants.rel$Progressed)
+```
+
+1 - No progression 2- Progressed
+#### 25.3.3.1 Create a Surv object
+
+```{r}
+peptoniphilus_e_allcontaminants_surv_object.rel <- Surv(time = peptoniphilus_e_subset_allcontaminants.rel$Overall_Progression_free, 
+                                          event = peptoniphilus_e_subset_allcontaminants.rel$Progressed)
+```
+
+#### 25.3.3.2 Fit the Kaplan-Meier survival curve by Winkia status
+
+```{r}
+peptoniphilus_e_allcontaminants_fit.rel <- survfit(peptoniphilus_e_allcontaminants_surv_object.rel ~ Peptoniphilus_E, data = peptoniphilus_e_subset_allcontaminants.rel)
+```
+
+#### 25.3.3.3 Plot the survival curve
+
+```{r}
+ggsurvplot(peptoniphilus_e_allcontaminants_fit.rel, data = peptoniphilus_e_subset_allcontaminants.rel, 
+           pval = TRUE, 
+           conf.int = TRUE,
+           legend.title = "Peptoniphilus_E Status",
+           legend.labs = c("Absent (0)", "Present (1)"),
+           xlab = "Progression-Free Days",
+           ylab = "Survival Probability",
+           ggtheme = theme_minimal())
+```
+
+
+# 26. CORRELATION ANALYSIS
+
+I have tried to look into doing correlation analysis using some packages that look at mutual exclusivity and cooccurence in gene mutation studies. However, the problem is that the gene mutation packages require the data to be in a specific file format (MAF to be precise) and that means the data is in a specific format which cannot be done with microbiome data. I could try to replicate the individual mathematical basis that the gene studies do and try to do it individually. 
+
+However, to start with I have just decided to do something simple in terms of correlation.
+
+Also should I do this with only cancer samples?
+
+## 26.1 Use the relative abundance dataframes generated in 6.1.1
+
+```{r}
+salter_nocontaminants_corr <- salter_nocontaminants.rel
+salter_consensus_corr <- salter_consensus.rel
+salter_allcontaminants_corr <- salter_allcontaminants.rel
+```
+
+
+## 26.2 Remove rare taxa
+
+For the purposes of this, we will not apply any specific percentage threshold but instead apply the same criteria that I did based on the number of samples i.e. present in at least 2 samples
+
+```{r}
+salter_nocontaminants_corr <- salter_nocontaminants_corr[, colSums(salter_nocontaminants_corr >0) >= 2]
+
+salter_consensus_corr <- salter_consensus_corr[, colSums(salter_consensus_corr >0) >= 2]
+
+salter_allcontaminants_corr <- salter_allcontaminants_corr[, colSums(salter_allcontaminants_corr >0) >= 2]
+```
+
+
+## 26.3 iGraph
+
+### 26.3.1 Compute pairwise correlations
+
+```{r}
+cor_matrix_nocontaminants <- cor(salter_nocontaminants_corr, method = "spearman")
+cor_test_nocontaminants <- rcorr(as.matrix(salter_nocontaminants_corr), type = "spearman")
+cor_pvals_nocontaminants <- cor_test_nocontaminants$P
+
+cor_matrix_consensus <- cor(salter_consensus_corr, method = "spearman")
+cor_test_consensus <- rcorr(as.matrix(salter_consensus_corr), type = "spearman")
+cor_pvals_consensus <- cor_test_consensus$P
+
+cor_matrix_allcontaminants <- cor(salter_allcontaminants_corr, method = "spearman")
+cor_test_allcontaminants <- rcorr(as.matrix(salter_allcontaminants_corr), type = "spearman")
+cor_pvals_allcontaminants <- cor_test_allcontaminants$P
+```
+
+### 26.3.2 Identify significant correlations
+
+Do multiple testing correction here with FDR as well
+
+```{r}
+cor_pvals_adj_nocontaminants <- p.adjust(cor_pvals_nocontaminants, method = "fdr")
+cor_pvals_adj_consensus <- p.adjust(cor_pvals_consensus, method = "fdr")
+cor_pvals_adj_allcontaminants <- p.adjust(cor_pvals_allcontaminants, method = "fdr")
+
+significant_cor_nocontaminants <- cor_matrix_nocontaminants
+significant_cor_consensus <- cor_matrix_consensus
+significant_cor_allcontaminants <- cor_matrix_allcontaminants
+
+significant_cor_nocontaminants[abs(cor_pvals_adj_nocontaminants) > 0.05] <- NA
+significant_cor_consensus[abs(cor_pvals_adj_consensus) > 0.05] <- NA
+significant_cor_allcontaminants[abs(cor_pvals_adj_allcontaminants) > 0.05] <- NA
+```
+
+### 26.3.3 Take correlations >0.6
+Convert the significant_cor to a dataframe and then pivot to long form and then extract only the correlations >0.6
+
+```{r}
+significant_cor_nocontaminants.df <- as.data.frame(significant_cor_nocontaminants)
+significant_cor_consensus.df <- as.data.frame(significant_cor_consensus)
+significant_cor_allcontaminants.df <- as.data.frame(significant_cor_allcontaminants)
+
+significant_cor_nocontaminants.long <- as.data.frame(as.table(significant_cor_nocontaminants))
+significant_cor_consensus.long <- as.data.frame(as.table(significant_cor_consensus))
+significant_cor_allcontaminants.long <- as.data.frame(as.table(significant_cor_allcontaminants))
+
+colnames(significant_cor_nocontaminants.long) <- c("Bacteria1_NC", "Bacteria2_NC", "Correlation_NC")
+colnames(significant_cor_consensus.long) <- c("Bacteria1_Con", "Bacteria2_Con", "Correlation_Con")
+colnames(significant_cor_allcontaminants.long) <- c("Bacteria1_AC", "Bacteria2_AC", "Correlation_AC")
+
+cor_06_list_nocontaminants <- significant_cor_nocontaminants.long %>%
+  filter(Bacteria1_NC != Bacteria2_NC) %>%
+  filter(abs(Correlation_NC) >= 0.6)
+cor_06_list_consensus <- significant_cor_consensus.long %>%
+  filter(Bacteria1_Con != Bacteria2_Con) %>%
+  filter(abs(Correlation_Con) >= 0.6)
+cor_06_list_allcontaminants <- significant_cor_allcontaminants.long %>%
+  filter(Bacteria1_AC != Bacteria2_AC) %>%
+  filter(abs(Correlation_AC) >= 0.6)
+
+write.csv(file = "Correlation_List_NC_HILA.csv", cor_06_list_nocontaminants)
+write.csv(file = "Correlation_List_Con_HILA.csv", cor_06_list_consensus)
+write.csv(file = "Correlation_List_AC_HILA.csv", cor_06_list_allcontaminants)
+
+```
+
+### 26.3.4 Represent Graphically
+
+```{r}
+graph_nocontaminants <- graph_from_data_frame(cor_06_list_nocontaminants, directed = FALSE)
+graph_consensus <- graph_from_data_frame(cor_06_list_consensus, directed = FALSE)
+graph_allcontaminants <- graph_from_data_frame(cor_06_list_allcontaminants, directed = FALSE)
+
+E(graph_nocontaminants)$weight <- cor_06_list_nocontaminants$Correlation_NC
+E(graph_consensus)$weight <- cor_06_list_consensus$Correlation_Con
+E(graph_allcontaminants)$weight <- cor_06_list_allcontaminants$Correlation_AC
+
+layout_fr_nocontaminants <- layout_with_kk(graph_nocontaminants)
+layout_fr_consensus <- layout_with_kk(graph_consensus)
+layout_fr_allcontaminants <- layout_with_kk(graph_allcontaminants)
+
+plot(graph_nocontaminants, 
+     layout = layout_fr_nocontaminants, 
+     edge.width = E(graph_nocontaminants)$weight*5,
+     edge.color = ifelse(E(graph_nocontaminants)$weight > 0, "blue", "red"),
+     vertex.size = 10, vertex.label.cex = 0.5, 
+     main = "Bacterial Correlation Network - No Contaminants")
+
+plot(graph_consensus, 
+     layout= layout_fr_consensus,
+     edge.width = E(graph_consensus)$weight * 5,
+     edge.color = ifelse(E(graph_nocontaminants)$weight > 0, "blue", "red"),
+     vertex.size = 10, vertex.label.cex = 0.5, 
+     main = "Bacterial Correlation Network - Consensus")
+
+plot(graph_consensus, 
+     layout = layout_fr_allcontaminants, 
+     edge.width = E(graph_consensus)$weight * 5, 
+     edge.color = ifelse(E(graph_consensus)$weight > 0, "blue", "red"),
+     vertex.size = 10, vertex.label.cex = 0.5, 
+     main = "Bacterial Correlation Network - All Contaminants")
+
+```
+## 26.4 Bubble Plot
+
+```{r}
+colnames(cor_06_list_nocontaminants) <- c("Genus_1", "Genus_2", "Correlation")
+colnames(cor_06_list_consensus) <- c("Genus_1", "Genus_2", "Correlation")
+colnames(cor_06_list_allcontaminants) <- c("Genus_1", "Genus_2", "Correlation")
+
+ggplot(cor_06_list_nocontaminants, aes(x=Genus_1, y=Genus_2, 
+                                       color = Correlation)) +
+  geom_point()+
+  scale_size_continuous(range = c(3,10)) +
+  scale_color_gradient2(low = "red", high = "blue", mid = "green", midpoint=0.8)+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 3),
+        axis.text.y = element_text(size = 3))
+  labs(title = "Bacterial Correlation - No contaminants", 
+       x = "Bacteria 1", y = "Bacteria 2")
+  
+ggplot(cor_06_list_consensus, aes(x=Genus_1, y=Genus_2, color = Correlation)) +
+  geom_point()+
+  scale_size_continuous(range = c(3,10)) +
+  scale_color_gradient2(low = "red", high = "blue", mid = "green", midpoint=0.8)+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 3),
+        axis.text.y = element_text(size = 3))
+  labs(title = "Bacterial Correlation - Consensus", 
+       x = "Bacteria 1", y = "Bacteria 2")
+  
+  
+ggplot(cor_06_list_allcontaminants, aes(x=Genus_1, y=Genus_2, color = Correlation)) +
+  geom_point()+
+  scale_size_continuous(range = c(3,10)) +
+  scale_color_gradient2(low = "red", high = "blue", mid = "green", midpoint=0.8)+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 3),
+        axis.text.y = element_text(size = 3))
+  labs(title = "Bacterial Correlation - All contaminants", 
+       x = "Bacteria 1", y = "Bacteria 2")
+
+```
+
+Check for correlations of ABBS species with other bacteria so only select ABBS out of the significant species list that you have got
+
+```{r}
+abbs_list <- c("Ezakiella", "Fenollaria", "Anaerococcus", "Porphyromonas_A", "Porphyromonas", "Peptoniphilus_C", "Peptoniphilus_A", "Fusobacterium", "Peptoniphilus_E", "Peptoniphilus_D")
+
+cor_06_list_nocontaminants_abbs <- cor_06_list_nocontaminants %>%
+  filter(Genus_1 %in% abbs_list)
+cor_06_list_consensus_abbs <- cor_06_list_consensus %>%
+  filter(Genus_1 %in% abbs_list)
+cor_06_list_allcontaminants_abbs <- cor_06_list_allcontaminants %>%
+  filter(Genus_1%in% abbs_list)
+
+write.csv(file = "Cor_06_List_NoContaminants_ABBS.csv", cor_06_list_nocontaminants_abbs)
+write.csv(file = "Cor_06_List_Consensus_ABBS.csv", cor_06_list_consensus_abbs)
+write.csv(file = "Cor_06_List_AllContaminants_ABBS.csv", cor_06_list_allcontaminants_abbs)
+
+plot_corr <- function(data, title_text){
+
+  ggplot(data,
+         aes(x = Genus_1,
+             y = Genus_2,
+             colour = Correlation,
+             size = abs(Correlation))) +
+
+    geom_point(alpha = 0.8) +
+
+    geom_text(aes(label = round(Correlation, 2)),
+              size = 5,
+              color = "black",
+              vjust = -0.8,
+              hjust = 0.5,
+              fontface = "bold") +
+
+    scale_size_continuous(range = c(2, 6)) +
+
+    scale_color_gradient2(
+      low = "red",
+      mid = "green",
+      high = "blue",
+      midpoint = 0.75
+    ) +
+
+    theme_minimal() +
+
+    theme(
+      axis.text.x = element_text(angle = 90,
+                                 hjust = 1,
+                                 size = 8),
+      axis.text.y = element_text(size = 8)
+    ) +
+
+    labs(
+      title = title_text,
+      x = "Bacteria 1",
+      y = "Bacteria 2",
+      size = "|Correlation|"
+    )
+}
+
+p1 <- plot_corr(cor_06_list_nocontaminants_abbs,
+          "Bacterial Correlation - No contaminants")
+
+p2 <- plot_corr(cor_06_list_consensus_abbs,
+          "Bacterial Correlation - Consensus")
+
+p3 <- plot_corr(cor_06_list_allcontaminants_abbs,
+          "Bacterial Correlation - All contaminants")
+
+ggsave("cor_no_contaminants.png", p1, width = 10, height = 8, dpi = 300)
+ggsave("cor_consensus.png", p2, width = 10, height = 8, dpi = 300)
+ggsave("cor_all_contaminants.png", p3, width = 10, height = 8, dpi = 300)
+```
+
+
+# Currently Working on this (RELATIVE ABUNDANCE) ----
+
+## No contaminant dataframe
+
+``` {r}
+salter_nocontaminants.rel.2 <- salter_nocontaminants.rel[, colSums(salter_nocontaminants.rel >0) >= 2]
+salter_consensus.rel.2 <- salter_consensus.rel[, colSums(salter_consensus.rel >0) >= 2]
+salter_allcontaminants.rel.2 <- salter_allcontaminants.rel[, colSums(salter_allcontaminants.rel >0) >= 2]
+
+merged_nocontaminants.rel <- merge(salter_nocontaminants.rel.2, hila_samples_metadata_nodeath_nocontaminants, by = "row.names")
+colnames(merged_nocontaminants.rel)[1] <- "Sample"
+genus_cols <- colnames(salter_nocontaminants.rel.2)
+
+quartile_nocontaminants <- merged_nocontaminants.rel %>%
+pivot_longer(
+    cols = all_of(genus_cols),
+    names_to = "Genus",          
+    values_to = "Abundance"      
+  )
+
+pdf("KMCurves_NC_Relab_Quartiles.pdf", width = 10, height = 6)
+# Kaplan-Meier Survival Analysis
+for (genus in unique(quartile_nocontaminants$Genus)) {
+  genus_data <- quartile_nocontaminants %>% filter(Genus == genus)
+ # Ensure 'Abundance' exists in the filtered data
+  if ("Abundance" %in% colnames(genus_data)) {
+    # Create a Surv object
+    surv_obj <- Surv(genus_data$overall_progression_free, genus_data$progressed)
+    
+    # Add jitter to abundance if values are identical (optional)
+    genus_data <- genus_data %>%
+      mutate(Abundance = Abundance + runif(n(), min = -1e-6, max = 1e-6))
+    
+    # Compute quantile breaks and ensure they are unique
+    quantile_breaks <- unique(quantile(genus_data$Abundance, probs = seq(0, 1, 0.25), na.rm = TRUE))
+    
+    # Ensure labels match the number of intervals
+    n_intervals <- length(quantile_breaks) - 1 # Number of intervals is one less than the number of breaks
+    quartile_labels <- paste0("Q", seq_len(n_intervals)) # Dynamically generate labels (Q1, Q2, ...)
+
+    # Divide Abundance into quartiles
+    genus_data <- genus_data %>%
+      mutate(Quartile = cut(Abundance,
+                            breaks = quantile_breaks,
+                            include.lowest = TRUE,
+                            labels = quartile_labels))
+    
+    # Fit survival curves
+    fit <- survfit(surv_obj ~ Quartile, data = genus_data)
+    
+   # Plot and save each KM curve
+    plot <- ggsurvplot(
+      fit,
+      data = genus_data,
+      title = paste("KM Curve for", genus),
+      xlab = "Time",
+      ylab = "Survival Probability",
+      legend.title = "Quartile",
+      pval = TRUE # Add p-value
+    )
+    
+    print(plot) # Print plot to the PDF
+  }
+}
+dev.off()
+```
+
+## Consensus Dataframe
+
+```{r}
+merged_consensus.rel <- merge(salter_consensus.rel.2, hila_samples_metadata_nodeath_consensus, by = "row.names")
+colnames(merged_consensus.rel)[1] <- "Sample"
+genus_cols <- colnames(salter_consensus.rel.2)
+
+quartile_consensus <- merged_consensus.rel %>%
+pivot_longer(
+    cols = all_of(genus_cols),
+    names_to = "Genus",          
+    values_to = "Abundance"      
+  )
+
+pdf("KMCurves_Con_Relab_Quartiles.pdf", width = 10, height = 6)
+# Kaplan-Meier Survival Analysis
+for (genus in unique(quartile_consensus$Genus)) {
+  genus_data <- quartile_consensus %>% filter(Genus == genus)
+ # Ensure 'Abundance' exists in the filtered data
+  if ("Abundance" %in% colnames(genus_data)) {
+    # Create a Surv object
+    surv_obj <- Surv(genus_data$overall_progression_free, genus_data$progressed)
+    
+    # Add jitter to abundance if values are identical (optional)
+    genus_data <- genus_data %>%
+      mutate(Abundance = Abundance + runif(n(), min = -1e-6, max = 1e-6))
+    
+    # Compute quantile breaks and ensure they are unique
+    quantile_breaks <- unique(quantile(genus_data$Abundance, probs = seq(0, 1, 0.25), na.rm = TRUE))
+    
+    # Ensure labels match the number of intervals
+    n_intervals <- length(quantile_breaks) - 1 # Number of intervals is one less than the number of breaks
+    quartile_labels <- paste0("Q", seq_len(n_intervals)) # Dynamically generate labels (Q1, Q2, ...)
+
+    # Divide Abundance into quartiles
+    genus_data <- genus_data %>%
+      mutate(Quartile = cut(Abundance,
+                            breaks = quantile_breaks,
+                            include.lowest = TRUE,
+                            labels = quartile_labels))
+    
+    # Fit survival curves
+    fit <- survfit(surv_obj ~ Quartile, data = genus_data)
+    
+   # Plot and save each KM curve
+    plot <- ggsurvplot(
+      fit,
+      data = genus_data,
+      title = paste("KM Curve for", genus),
+      xlab = "Time",
+      ylab = "Survival Probability",
+      legend.title = "Quartile",
+      pval = TRUE # Add p-value
+    )
+    
+    print(plot) # Print plot to the PDF
+  }
+}
+dev.off()
+```
+
+## All Contaminants Dataframe
+
+```{r}
+merged_allcontaminants.rel <- merge(salter_allcontaminants.rel.2, hila_samples_metadata_nodeath_allcontaminants, by = "row.names")
+colnames(merged_allcontaminants.rel)[1] <- "Sample"
+genus_cols <- colnames(salter_allcontaminants.rel.2)
+
+quartile_allcontaminants <- merged_allcontaminants.rel %>%
+pivot_longer(
+    cols = all_of(genus_cols),
+    names_to = "Genus",          
+    values_to = "Abundance"      
+  )
+pdf("KMCurves_AC_Relab_Quartiles.pdf", width = 10, height = 6)
+# Kaplan-Meier Survival Analysis
+for (genus in unique(quartile_allcontaminants$Genus)) {
+  genus_data <- quartile_allcontaminants %>% filter(Genus == genus)
+ # Ensure 'Abundance' exists in the filtered data
+  if ("Abundance" %in% colnames(genus_data)) {
+    # Create a Surv object
+    surv_obj <- Surv(genus_data$overall_progression_free, genus_data$progressed)
+    
+    # Add jitter to abundance if values are identical (optional)
+    genus_data <- genus_data %>%
+      mutate(Abundance = Abundance + runif(n(), min = -1e-6, max = 1e-6))
+    
+    # Compute quantile breaks and ensure they are unique
+    quantile_breaks <- unique(quantile(genus_data$Abundance, probs = seq(0, 1, 0.25), na.rm = TRUE))
+    
+    # Ensure labels match the number of intervals
+    n_intervals <- length(quantile_breaks) - 1 # Number of intervals is one less than the number of breaks
+    quartile_labels <- paste0("Q", seq_len(n_intervals)) # Dynamically generate labels (Q1, Q2, ...)
+
+    # Divide Abundance into quartiles
+    genus_data <- genus_data %>%
+      mutate(Quartile = cut(Abundance,
+                            breaks = quantile_breaks,
+                            include.lowest = TRUE,
+                            labels = quartile_labels))
+    
+    # Fit survival curves
+    fit <- survfit(surv_obj ~ Quartile, data = genus_data)
+    
+   # Plot and save each KM curve
+    plot <- ggsurvplot(
+      fit,
+      data = genus_data,
+      title = paste("KM Curve for", genus),
+      xlab = "Time",
+      ylab = "Survival Probability",
+      legend.title = "Quartile",
+      pval = TRUE # Add p-value
+    )
+    
+    print(plot) # Print plot to the PDF
+  }
+}
+dev.off()
+```
+
+# Scatterplots with Urinicoccus and ABBS
+
+The ABBS that Urinicoccus occurs with are Porphyromonas_A, Ezakiella, Porphyromonas and Peptoniphilus_E
+
+Extract only the relevant columns from the relative abundance dataframe
+
+## No contaminant Dataframe
+```{r}
+urinicoccus_scatplot_nocontaminants.rel <- salter_nocontaminants.rel
+urinicoccus_scatplot_nocontaminants.rel <- urinicoccus_scatplot_nocontaminants.rel %>%
+  select("Porphyromonas_A", "Porphyromonas", "Ezakiella", "Peptoniphilus_E", "Urinicoccus")
+
+urinicoccus_scatplot_nocontaminants.rel_long <- pivot_longer(urinicoccus_scatplot_nocontaminants.rel, cols = 1:4, names_to = "Genera", values_to = "Abundance")
+
+ggplot(urinicoccus_scatplot_nocontaminants.rel_long, aes(x = Urinicoccus, y = Abundance)) +
+  geom_point() +
+  facet_wrap(~Genera) +
+  labs(title = "Relationship of Urinicoccus with Other ABBS Genera",
+       x = "Urinicoccus Abundance",
+       y = "Relative Abundance of Other ABBS Genera") +
+  theme_minimal()
+```
+
+```{r}
+# Plot each scatterplot separately
+
+plot(urinicoccus_scatplot_nocontaminants.rel$Urinicoccus, urinicoccus_scatplot_nocontaminants.rel$Porphyromonas_A, main = "Urinicoccus vs Porphyromonas_A", xlab = "Urinicoccus", ylab = "Porphyromonas_A", pch = 16, col = "blue")
+
+plot(urinicoccus_scatplot_nocontaminants.rel$Urinicoccus, urinicoccus_scatplot_nocontaminants.rel$Porphyromonas, main = "Urinicoccus vs Porphyromonas", xlab = "Urinicoccus", ylab = "Porphyromonas", pch = 16, col = "blue")
+
+plot(urinicoccus_scatplot_nocontaminants.rel$Urinicoccus, urinicoccus_scatplot_nocontaminants.rel$Ezakiella, main = "Urinicoccus vs Ezakiella", xlab = "Urinicoccus", ylab = "Ezakiella", pch = 16, col = "blue")
+
+plot(urinicoccus_scatplot_nocontaminants.rel$Urinicoccus, urinicoccus_scatplot_nocontaminants.rel$Peptoniphilus_E, main = "Urinicoccus vs Peptoniphilus_E", xlab = "Urinicoccus", ylab = "Peptoniphilus_E", pch = 16, col = "blue")
+
+```
+
+## Consensus Dataframe
+```{r}
+urinicoccus_scatplot_consensus.rel <- salter_consensus.rel
+urinicoccus_scatplot_consensus.rel <- urinicoccus_scatplot_consensus.rel %>%
+  select("Porphyromonas_A", "Porphyromonas", "Ezakiella", "Peptoniphilus_E", "Urinicoccus")
+
+urinicoccus_scatplot_consensus.rel_long <- pivot_longer(urinicoccus_scatplot_consensus.rel, cols = 1:4, names_to = "Genera", values_to = "Abundance")
+
+ggplot(urinicoccus_scatplot_consensus.rel_long, aes(x = Urinicoccus, y = Abundance)) +
+  geom_point() +
+  facet_wrap(~Genera) +
+  labs(title = "Relationship of Urinicoccus with Other ABBS Genera",
+       x = "Urinicoccus Abundance",
+       y = "Relative Abundance of Other ABBS Genera") +
+  theme_minimal()
+```
+
+
+```{r}
+# Plot each scatterplot separately
+
+plot(urinicoccus_scatplot_consensus.rel$Urinicoccus, urinicoccus_scatplot_consensus.rel$Porphyromonas_A, main = "Urinicoccus vs Porphyromonas_A", xlab = "Urinicoccus", ylab = "Porphyromonas_A", pch = 16, col = "blue")
+
+plot(urinicoccus_scatplot_consensus.rel$Urinicoccus, urinicoccus_scatplot_consensus.rel$Porphyromonas, main = "Urinicoccus vs Porphyromonas", xlab = "Urinicoccus", ylab = "Porphyromonas", pch = 16, col = "blue")
+
+plot(urinicoccus_scatplot_consensus.rel$Urinicoccus, urinicoccus_scatplot_consensus.rel$Ezakiella, main = "Urinicoccus vs Ezakiella", xlab = "Urinicoccus", ylab = "Ezakiella", pch = 16, col = "blue")
+
+plot(urinicoccus_scatplot_consensus.rel$Urinicoccus, urinicoccus_scatplot_consensus.rel$Peptoniphilus_E, main = "Urinicoccus vs Peptoniphilus_E", xlab = "Urinicoccus", ylab = "Peptoniphilus_E", pch = 16, col = "blue")
+
+```
+
+## All Contaminants Dataframe
+
+```{r}
+urinicoccus_scatplot_allcontaminants.rel <- salter_allcontaminants.rel
+urinicoccus_scatplot_allcontaminants.rel <- urinicoccus_scatplot_allcontaminants.rel %>%
+  select("Porphyromonas_A", "Porphyromonas", "Ezakiella", "Peptoniphilus_E", "Urinicoccus")
+
+urinicoccus_scatplot_allcontaminants.rel_long <- pivot_longer(urinicoccus_scatplot_allcontaminants.rel, cols = 1:4, names_to = "Genera", values_to = "Abundance")
+
+ggplot(urinicoccus_scatplot_allcontaminants.rel_long, aes(x = Urinicoccus, y = Abundance)) +
+  geom_point() +
+  facet_wrap(~Genera) +
+  labs(title = "Relationship of Urinicoccus with Other ABBS Genera",
+       x = "Urinicoccus Abundance",
+       y = "Relative Abundance of Other ABBS Genera") +
+  theme_minimal()
+```
+```{r}
+# Plot each scatterplot separately
+
+plot(urinicoccus_scatplot_allcontaminants.rel$Urinicoccus, urinicoccus_scatplot_allcontaminants.rel$Porphyromonas_A, main = "Urinicoccus vs Porphyromonas_A", xlab = "Urinicoccus", ylab = "Porphyromonas_A", pch = 16, col = "blue")
+
+plot(urinicoccus_scatplot_allcontaminants.rel$Urinicoccus, urinicoccus_scatplot_allcontaminants.rel$Porphyromonas, main = "Urinicoccus vs Porphyromonas", xlab = "Urinicoccus", ylab = "Porphyromonas", pch = 16, col = "blue")
+
+plot(urinicoccus_scatplot_allcontaminants.rel$Urinicoccus, urinicoccus_scatplot_allcontaminants.rel$Ezakiella, main = "Urinicoccus vs Ezakiella", xlab = "Urinicoccus", ylab = "Ezakiella", pch = 16, col = "blue")
+
+plot(urinicoccus_scatplot_allcontaminants.rel$Urinicoccus, urinicoccus_scatplot_allcontaminants.rel$Peptoniphilus_E, main = "Urinicoccus vs Peptoniphilus_E", xlab = "Urinicoccus", ylab = "Peptoniphilus_E", pch = 16, col = "blue")
+
+```
+Extract the percentage relative abundance in cancer samples for just these five genera in all three dataframes
+
+```{r}
+abbs_urinicoccus_nocontaminants <- salter_nocontaminants.rel %>%
+  select("Urinicoccus", "Porphyromonas", "Porphyromonas_A", "Peptoniphilus_E", "Ezakiella")
+abbs_urinicoccus_consensus <- salter_consensus.rel %>%
+  select("Urinicoccus", "Porphyromonas", "Porphyromonas_A", "Peptoniphilus_E", "Ezakiella")
+abbs_urinicoccus_allcontaminants <- salter_allcontaminants.rel %>%
+  select("Urinicoccus", "Porphyromonas", "Porphyromonas_A", "Peptoniphilus_E", "Ezakiella")
+```
+
+Convert anything >0 to present
+
+```{r}
+abbs_urinicoccus_nocontaminants.rel.PA<- abbs_urinicoccus_nocontaminants %>% mutate_if(is.numeric, ~1 * (. > 0))
+abbs_urinicoccus_consensus.rel.PA<- abbs_urinicoccus_consensus %>% mutate_if(is.numeric, ~1 * (. > 0))
+abbs_urinicoccus_allcontaminants.rel.PA<- abbs_urinicoccus_allcontaminants %>% mutate_if(is.numeric, ~1 * (. > 0))
+```
+
+Create contingency tables and get the output
+
+```{r}
+#No contaminant Dataframe
+nocontaminants_urinicoccus_porphyromonasA <- table(abbs_urinicoccus_nocontaminants.rel.PA$Porphyromonas_A, abbs_urinicoccus_nocontaminants.rel.PA$Urinicoccus)
+dimnames(nocontaminants_urinicoccus_porphyromonasA) <- list(
+  "Presence of Porphyromonas_A" = c("Absent", "Present"),
+  "Presence of Urinicoccus" = c("Absent", "Present")
+)
+nocontaminants_urinicoccus_porphyromonasA
+
+nocontaminants_urinicoccus_porphyromonas <- table(abbs_urinicoccus_nocontaminants.rel.PA$Porphyromonas, abbs_urinicoccus_nocontaminants.rel.PA$Urinicoccus)
+dimnames(nocontaminants_urinicoccus_porphyromonas) <- list(
+  "Presence of Porphyromonas" = c("Absent", "Present"),
+  "Presence of Urinicoccus" = c("Absent", "Present")
+)
+nocontaminants_urinicoccus_porphyromonas
+
+nocontaminants_urinicoccus_ezakiella <- table(abbs_urinicoccus_nocontaminants.rel.PA$Ezakiella, abbs_urinicoccus_nocontaminants.rel.PA$Urinicoccus)
+dimnames(nocontaminants_urinicoccus_ezakiella) <- list(
+  "Presence of Ezakiella" = c("Absent", "Present"),
+  "Presence of Urinicoccus" = c("Absent", "Present")
+)
+nocontaminants_urinicoccus_ezakiella
+
+nocontaminants_urinicoccus_peptoniphilus_e <- table(abbs_urinicoccus_nocontaminants.rel.PA$Peptoniphilus_E, abbs_urinicoccus_nocontaminants.rel.PA$Urinicoccus)
+dimnames(nocontaminants_urinicoccus_peptoniphilus_e) <- list(
+  "Presence of Peptoniphilus_E" = c("Absent", "Present"),
+  "Presence of Urinicoccus" = c("Absent", "Present")
+)
+nocontaminants_urinicoccus_peptoniphilus_e 
+
+#Consensus
+consensus_urinicoccus_porphyromonasA <- table(abbs_urinicoccus_consensus.rel.PA$Porphyromonas_A, abbs_urinicoccus_consensus.rel.PA$Urinicoccus)
+dimnames(consensus_urinicoccus_porphyromonasA) <- list(
+  "Presence of Porphyromonas_A" = c("Absent", "Present"),
+  "Presence of Urinicoccus" = c("Absent", "Present")
+)
+consensus_urinicoccus_porphyromonasA
+
+consensus_urinicoccus_porphyromonas <- table(abbs_urinicoccus_consensus.rel.PA$Porphyromonas, abbs_urinicoccus_consensus.rel.PA$Urinicoccus)
+dimnames(consensus_urinicoccus_porphyromonas) <- list(
+  "Presence of Porphyromonas" = c("Absent", "Present"),
+  "Presence of Urinicoccus" = c("Absent", "Present")
+)
+consensus_urinicoccus_porphyromonas
+
+consensus_urinicoccus_ezakiella <- table(abbs_urinicoccus_consensus.rel.PA$Ezakiella, abbs_urinicoccus_consensus.rel.PA$Urinicoccus)
+dimnames(consensus_urinicoccus_ezakiella) <- list(
+  "Presence of Ezakiella" = c("Absent", "Present"),
+  "Presence of Urinicoccus" = c("Absent", "Present")
+)
+consensus_urinicoccus_ezakiella
+
+consensus_urinicoccus_peptoniphilus_e <- table(abbs_urinicoccus_consensus.rel.PA$Peptoniphilus_E, abbs_urinicoccus_consensus.rel.PA$Urinicoccus)
+dimnames(consensus_urinicoccus_peptoniphilus_e) <- list(
+  "Presence of Peptoniphilus_E" = c("Absent", "Present"),
+  "Presence of Urinicoccus" = c("Absent", "Present")
+)
+consensus_urinicoccus_peptoniphilus_e 
+
+
+#All Contaminants
+allcontaminants_urinicoccus_porphyromonasA <- table(abbs_urinicoccus_allcontaminants.rel.PA$Porphyromonas_A, abbs_urinicoccus_consensus.rel.PA$Urinicoccus)
+dimnames(allcontaminants_urinicoccus_porphyromonasA) <- list(
+  "Presence of Porphyromonas_A" = c("Absent", "Present"),
+  "Presence of Urinicoccus" = c("Absent", "Present")
+)
+allcontaminants_urinicoccus_porphyromonasA
+
+allcontaminants_urinicoccus_porphyromonas <- table(abbs_urinicoccus_allcontaminants.rel.PA$Porphyromonas, abbs_urinicoccus_allcontaminants.rel.PA$Urinicoccus)
+dimnames(allcontaminants_urinicoccus_porphyromonas) <- list(
+  "Presence of Porphyromonas" = c("Absent", "Present"),
+  "Presence of Urinicoccus" = c("Absent", "Present")
+)
+allcontaminants_urinicoccus_porphyromonas
+
+allcontaminants_urinicoccus_ezakiella <- table(abbs_urinicoccus_allcontaminants.rel.PA$Ezakiella, abbs_urinicoccus_allcontaminants.rel.PA$Urinicoccus)
+dimnames(allcontaminants_urinicoccus_ezakiella) <- list(
+  "Presence of Ezakiella" = c("Absent", "Present"),
+  "Presence of Urinicoccus" = c("Absent", "Present")
+)
+allcontaminants_urinicoccus_ezakiella
+
+allcontaminants_urinicoccus_peptoniphilus_e <- table(abbs_urinicoccus_allcontaminants.rel.PA$Peptoniphilus_E, abbs_urinicoccus_allcontaminants.rel.PA$Urinicoccus)
+dimnames(allcontaminants_urinicoccus_peptoniphilus_e) <- list(
+  "Presence of Peptoniphilus_E" = c("Absent", "Present"),
+  "Presence of Urinicoccus" = c("Absent", "Present")
+)
+allcontaminants_urinicoccus_peptoniphilus_e 
+```
+
+# Correlation for Presence-Absence
+
+```{r}
+# Filter columns with at least 2 occurrences
+salter_nocontaminants.rel.2 <- salter_nocontaminants.rel[, colSums(salter_nocontaminants.rel > 0) >= 2]
+salter_consensus.rel.2 <- salter_consensus.rel[, colSums(salter_consensus.rel > 0) >= 2]
+salter_allcontaminants.rel.2 <- salter_allcontaminants.rel[, colSums(salter_allcontaminants.rel > 0) >= 2]
+
+# Convert to Presence-Absence (PA) format
+salter_nocontaminants.rel.2.PA <- salter_nocontaminants.rel.2 %>% mutate_if(is.numeric, ~1 * (. > 0))
+salter_consensus.rel.2.PA <- salter_consensus.rel.2 %>% mutate_if(is.numeric, ~1 * (. > 0))
+salter_allcontaminants.rel.2.PA <- salter_allcontaminants.rel.2 %>% mutate_if(is.numeric, ~1 * (. > 0))
+
+# Function to perform Chi-square tests for a given dataset
+perform_chi_square <- function(data) {
+  results <- list()
+  
+  if (ncol(data) > 1) {  # Ensure there are at least two genera to compare
+    for (i in 1:(ncol(data) - 1)) {
+      for (j in (i + 1):ncol(data)) {
+        # Create contingency table
+        contingency_table <- table(data[[i]], data[[j]])
+        
+        # Ensure the table is at least 2x2
+        if (nrow(contingency_table) == 2 && ncol(contingency_table) == 2) {
+          # Perform Chi-square test
+          test_result <- chisq.test(contingency_table)
+          
+          # Store results
+          results[[paste(colnames(data)[i], colnames(data)[j], sep = "_vs_")]] <- list(
+            p_value = test_result$p.value,
+            statistic = test_result$statistic,
+            observed = contingency_table
+          )
+        } else {
+          cat("Skipping:", colnames(data)[i], "vs", colnames(data)[j], "- Not a 2x2 table\n")
+        }
+      }
+    }
+    
+    # Convert results into a data frame
+    results_df <- tibble(
+      Comparison = names(results),
+      p_value = sapply(results, function(x) x$p_value),
+      statistic = sapply(results, function(x) x$statistic)
+    ) %>% arrange(p_value)
+    
+    return(results_df)
+  } else {
+    cat("Not enough genera for pairwise comparison.\n")
+    return(NULL)
+  }
+}
+
+# Run Chi-square tests on each dataset
+nocontaminants_results <- perform_chi_square(salter_nocontaminants.rel.2.PA)
+consensus_results <- perform_chi_square(salter_consensus.rel.2.PA)
+allcontaminants_results <- perform_chi_square(salter_allcontaminants.rel.2.PA)
+
+nocontaminants_results <- nocontaminants_results %>%
+  filter(p_value < 0.05)
+consensus_results <- consensus_results %>%
+  filter(p_value < 0.05)
+allcontaminants_results <- allcontaminants_results %>%
+  filter(p_value < 0.05)
+
+# Print or save results
+write.csv(file = "NoContaminants_ChiSq.csv", nocontaminants_results)
+write.csv(file = "Consensus_ChiSq.csv", consensus_results)
+write.csv(file = "AllContaminants_ChiSq.csv", allcontaminants_results)
+
+```
+
+# Cox Proportional Hazards Model
+
+```{r}
+# Ensure metadata variables exist before mutation
+salter_nocontaminants.rel.2 <- salter_nocontaminants.rel.2 %>%
+  mutate(overall_progression_free = hila_samples_metadata_nodeath_nocontaminants$overall_progression_free,
+         progressed = hila_samples_metadata_nodeath_nocontaminants$progressed)
+
+salter_consensus.rel.2 <- salter_consensus.rel.2 %>%
+  mutate(overall_progression_free = hila_samples_metadata_nodeath_consensus$overall_progression_free,
+         progressed = hila_samples_metadata_nodeath_consensus$progressed)
+
+salter_allcontaminants.rel.2 <- salter_allcontaminants.rel.2 %>%
+  mutate(overall_progression_free = hila_samples_metadata_nodeath_allcontaminants$overall_progression_free,
+         progressed = hila_samples_metadata_nodeath_allcontaminants$progressed)
+
+# Correctly assigning numeric encoding
+salter_nocontaminants.rel.2$progressed_numeric <- ifelse(salter_nocontaminants.rel.2$progressed == TRUE, 1, 0)
+salter_consensus.rel.2$progressed_numeric <- ifelse(salter_consensus.rel.2$progressed == TRUE, 1, 0)
+salter_allcontaminants.rel.2$progressed_numeric <- ifelse(salter_allcontaminants.rel.2$progressed == TRUE, 1, 0)
+
+#UNIVARIATE ANALYSIS FOR NO CONTAMINANTS
+str(salter_nocontaminants.rel.2)
+univariate_results_nocontaminants <- lapply(names(salter_nocontaminants.rel.2)[1:(ncol(salter_nocontaminants.rel.2) - 3)], function(genus) {
+  coxph(Surv(overall_progression_free, progressed_numeric) ~ salter_nocontaminants.rel.2[[genus]], data = salter_nocontaminants.rel.2)
+})
+
+# Extract results
+univariate_summary_nocontaminants <- lapply(univariate_results_nocontaminants, summary)
+
+univariate_df_nocontaminants <- data.frame(
+  Genus = names(salter_nocontaminants.rel.2)[1:(ncol(salter_nocontaminants.rel.2) - 3)],
+  HR = sapply(univariate_results_nocontaminants, function(model) exp(coef(model))),
+  p_value = sapply(univariate_results_nocontaminants, function(model) summary(model)$coefficients[,"Pr(>|z|)"])
+)
+
+# View sorted results by p-value
+univariate_df_nocontaminants[order(univariate_df_nocontaminants$p_value), ]
+write.csv(file = "Univariate_DF_Nocontaminants.csv", univariate_df_nocontaminants)
+
+#UNIVARIATE ANALYSIS FOR CONSENSUS
+str(salter_consensus.rel.2)
+univariate_results_consensus <- lapply(names(salter_consensus.rel.2)[1:(ncol(salter_consensus.rel.2) - 3)], function(genus) {
+  coxph(Surv(overall_progression_free, progressed_numeric) ~ salter_consensus.rel.2[[genus]], data = salter_consensus.rel.2)
+})
+
+# Extract results
+univariate_summary_consensus <- lapply(univariate_results_consensus, summary)
+
+univariate_df_consensus <- data.frame(
+  Genus = names(salter_consensus.rel.2)[1:(ncol(salter_consensus.rel.2) - 3)],
+  HR = sapply(univariate_results_consensus, function(model) exp(coef(model))),
+  p_value = sapply(univariate_results_consensus, function(model) summary(model)$coefficients[,"Pr(>|z|)"])
+)
+
+# View sorted results by p-value
+univariate_df_consensus[order(univariate_df_consensus$p_value), ]
+write.csv(file = "Univariate_DF_Consensus.csv", univariate_df_consensus)
+
+#UNIVARIATE ANALYSIS FOR ALL CONTAMINANTS
+str(salter_allcontaminants.rel.2)
+univariate_results_allcontaminants <- lapply(names(salter_allcontaminants.rel.2)[1:(ncol(salter_allcontaminants.rel.2) - 3)], function(genus) {
+  coxph(Surv(overall_progression_free, progressed_numeric) ~ salter_allcontaminants.rel.2[[genus]], data = salter_allcontaminants.rel.2)
+})
+
+# Extract results
+univariate_summary_allcontaminants <- lapply(univariate_results_allcontaminants, summary)
+
+univariate_df_allcontaminants <- data.frame(
+  Genus = names(salter_allcontaminants.rel.2)[1:(ncol(salter_allcontaminants.rel.2) - 3)],
+  HR = sapply(univariate_results_allcontaminants, function(model) exp(coef(model))),
+  p_value = sapply(univariate_results_allcontaminants, function(model) summary(model)$coefficients[,"Pr(>|z|)"])
+)
+
+# View sorted results by p-value
+univariate_df_allcontaminants[order(univariate_df_allcontaminants$p_value), ]
+write.csv(file = "Univariate_DF_AllContaminants.csv", univariate_df_allcontaminants)
+
+#MULTIVARIATE ANALYSIS - NO CONTAMINANTS
+
+multivariate_model_nocontaminants <- coxph(Surv(salter_nocontaminants.rel.2$overall_progression_free, 
+                                                salter_nocontaminants.rel.2$progressed_numeric) ~ ., 
+                                           data = salter_nocontaminants.rel.2[, 1:(ncol(salter_nocontaminants.rel.2) - 3)])
+ 
+summary(multivariate_model_nocontaminants)
+
+summary_multivariate_nocontaminants <- summary(multivariate_model_nocontaminants)
+
+multivariate_results_nocontaminants_df <- data.frame(
+  Variable = rownames(summary_multivariate_nocontaminants$coefficients),
+  HR = exp(summary_multivariate_nocontaminants$coefficients[, "coef"]), 
+  HR_lower95 = exp(summary_multivariate_nocontaminants$conf.int[, "lower .95"]),
+  HR_upper95 = exp(summary_multivariate_nocontaminants$conf.int[, "upper .95"]), 
+  p_value = summary_multivariate_nocontaminants$coefficients[, "Pr(>|z|)"]  
+)
+
+multivariate_results_nocontaminants_df <- multivariate_results_nocontaminants_df[order(multivariate_results_nocontaminants_df$p_value), ]
+print(multivariate_results_nocontaminants_df)
+write.csv(file = "Multivariate_Results_Nocontaminants.csv", multivariate_results_nocontaminants_df)
+
+#MULTIVARIATE ANALYSIS - CONSENSUS
+
+multivariate_model_consensus <- coxph(Surv(salter_consensus.rel.2$overall_progression_free, 
+                                                salter_consensus.rel.2$progressed_numeric) ~ ., 
+                                           data = salter_consensus.rel.2[, 1:(ncol(salter_consensus.rel.2) - 3)])
+ 
+summary(multivariate_model_consensus)
+
+summary_multivariate_consensus <- summary(multivariate_model_consensus)
+
+multivariate_results_consensus_df <- data.frame(
+  Variable = rownames(summary_multivariate_consensus$coefficients),
+  HR = exp(summary_multivariate_consensus$coefficients[, "coef"]), 
+  HR_lower95 = exp(summary_multivariate_consensus$conf.int[, "lower .95"]),
+  HR_upper95 = exp(summary_multivariate_consensus$conf.int[, "upper .95"]), 
+  p_value = summary_multivariate_consensus$coefficients[, "Pr(>|z|)"]  
+)
+
+multivariate_results_consensus_df <- multivariate_results_consensus_df[order(multivariate_results_consensus_df$p_value), ]
+print(multivariate_results_consensus_df)
+write.csv(file = "Multivariate_Results_Consensus.csv", multivariate_results_consensus_df)
+
+#MULTIVARIATE ANALYSIS - ALL CONTAMINANTS
+
+multivariate_model_allcontaminants <- coxph(Surv(salter_allcontaminants.rel.2$overall_progression_free, 
+                                                salter_allcontaminants.rel.2$progressed_numeric) ~ ., 
+                                           data = salter_allcontaminants.rel.2[, 1:(ncol(salter_allcontaminants.rel.2) - 3)])
+ 
+summary(multivariate_model_allcontaminants)
+
+summary_multivariate_allcontaminants <- summary(multivariate_model_allcontaminants)
+
+multivariate_results_allcontaminants_df <- data.frame(
+  Variable = rownames(summary_multivariate_allcontaminants$coefficients),
+  HR = exp(summary_multivariate_allcontaminants$coefficients[, "coef"]), 
+  HR_lower95 = exp(summary_multivariate_allcontaminants$conf.int[, "lower .95"]),
+  HR_upper95 = exp(summary_multivariate_allcontaminants$conf.int[, "upper .95"]), 
+  p_value = summary_multivariate_allcontaminants$coefficients[, "Pr(>|z|)"]  
+)
+
+multivariate_results_allcontaminants_df <- multivariate_results_allcontaminants_df[order(multivariate_results_allcontaminants_df$p_value), ]
+print(multivariate_results_allcontaminants_df)
+write.csv(file = "Multivariate_Results_AllContaminants.csv", multivariate_results_allcontaminants_df)
+
+```
+
+
+
+
+
+
